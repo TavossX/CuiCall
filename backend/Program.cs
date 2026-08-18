@@ -1,5 +1,9 @@
 using backend.Hubs;
 
+// Desativa inotify FileSystemWatcher para rodar em containers compartilhados no Render/Linux
+Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
+Environment.SetEnvironmentVariable("DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE", "false");
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSignalR();
