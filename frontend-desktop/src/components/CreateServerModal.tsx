@@ -45,6 +45,18 @@ export const CreateServerModal = ({ isOpen, onClose, onServerCreated }: CreateSe
                 if (memberError) {
                     console.warn('Aviso ao registrar membro:', memberError);
                 }
+
+                // 3. Cria os canais padrão do servidor (# geral e 🔊 Lobby)
+                const { error: channelsError } = await supabase
+                    .from('channels')
+                    .insert([
+                        { server_id: server.id, name: 'geral', type: 'text' },
+                        { server_id: server.id, name: 'Lobby', type: 'voice' }
+                    ]);
+
+                if (channelsError) {
+                    console.warn('Aviso ao criar canais padrão:', channelsError);
+                }
             }
 
             setServerName('');

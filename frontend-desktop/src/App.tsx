@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Box, Button, Input, VStack, HStack, Heading, Text, Flex, Image, Spinner, Tooltip, IconButton, Avatar, useDisclosure, useToast } from '@chakra-ui/react';
 import logo from './assets/CuiCall.png';
 import { useWebRTC } from './useWebRTC';
@@ -8,13 +8,22 @@ import { SettingsModal } from './components/SettingsModal';
 import { CreateServerModal } from './components/CreateServerModal';
 import { BsMicFill, BsMicMuteFill, BsCameraVideoFill, BsCameraVideoOffFill, BsTelephoneXFill, BsBoxArrowRight, BsShareFill, BsGearFill, BsClipboard, BsPlusLg } from 'react-icons/bs';
 
+export interface Channel {
+    id: string;
+    server_id: string;
+    name: string;
+    type: 'text' | 'voice';
+    created_at: string;
+}
+
 function App() {
     const [isLoading, setIsLoading] = useState(true);
     const [session, setSession] = useState<any>(null);
-    const [activeChannel, setActiveChannel] = useState<string | null>(null);
-    const [chatInput, setChatInput] = useState('');
     const [servers, setServers] = useState<any[]>([]);
     const [selectedServer, setSelectedServer] = useState<any | null>(null);
+    const [channels, setChannels] = useState<Channel[]>([]);
+    const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
+    const [chatInput, setChatInput] = useState('');
 
     const settingsDisclosure = useDisclosure();
     const createServerDisclosure = useDisclosure();
@@ -22,8 +31,9 @@ function App() {
 
     // Hook global no nível raiz do App
     const {
-        localStream, remoteStream, inVoice,
+        localStream, remoteStream, inVoice, voiceRoomId,
         isCamOff, isMuted, channelMessages,
+        setChannelMessages, loadChannelMessages,
         joinVoice, leaveVoice, joinTextChannel,
         toggleMute, toggleCamera, shareScreen,
         sendMessage, stopAllMedia,
@@ -32,6 +42,9 @@ function App() {
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    const userEmail = session?.user?.email ?? 'Usuário';
+    const userName = userEmail.split('@')[0];
 
     // ═══════ Auth & Servers ═══════
     const fetchServers = async () => {
@@ -67,6 +80,59 @@ function App() {
         return () => subscription.unsubscribe();
     }, []);
 
+    // ═══════ Canais Dinâmicos por Servidor ═══════
+    const fetchChannels = useCallback(async (serverId: string) => {
+        const { data, error } = await supabase
+            .from('channels')
+            .select('*')
+            .eq('server_id', serverId)
+            .order('created_at', { ascending: true });
+
+        if (!error && data) {
+            if (data.length === 0) {
+                // Servidor sem canais: cria os canais padrão automaticamente
+                const { data: newChannels } = await supabase
+                    .from('channels')
+                    .insert([
+                        { server_id: serverId, name: 'geral', type: 'text' },
+                        { server_id: serverId, name: 'Lobby', type: 'voice' }
+                    ])
+                    .select();
+
+                if (newChannels) setChannels(newChannels);
+            } else {
+                setChannels(data);
+            }
+        }
+    }, []);
+
+    useEffect(() => {
+        if (selectedServer) {
+            fetchChannels(selectedServer.id);
+            setActiveChannel(null); // Reseta canal ativo ao trocar de servidor
+        } else {
+            setChannels([]);
+            setActiveChannel(null);
+        }
+    }, [selectedServer, fetchChannels]);
+
+    // ═══════ Histórico de Mensagens do Supabase ═══════
+    const fetchMessages = useCallback(async (channelId: string) => {
+        const { data, error } = await supabase
+            .from('messages')
+            .select('*')
+            .eq('channel_id', channelId)
+            .order('created_at', { ascending: true });
+
+        if (!error && data) {
+            const formatted = data.map((m: any) => ({
+                senderId: m.user_id === session?.user?.id ? userName : m.user_id.slice(0, 8),
+                text: m.content
+            }));
+            loadChannelMessages(channelId, formatted);
+        }
+    }, [session?.user?.id, userName, loadChannelMessages]);
+
     // ═══════ Video refs ═══════
     useEffect(() => {
         if (localVideoRef.current && localStream && !isCamOff) {
@@ -80,36 +146,33 @@ function App() {
         }
     }, [remoteStream, activeChannel]);
 
-    // Current room ID for chat
-    const currentChatChannelId = activeChannel === 'voice' 
-        ? 'cuicall-voice-main' 
-        : (activeChannel ? `cuicall-${activeChannel}` : '');
-
-    const currentMessages = currentChatChannelId ? (channelMessages[currentChatChannelId] || []) : [];
+    // Mensagens do canal ativo
+    const currentMessages = activeChannel ? (channelMessages[activeChannel.id] || []) : [];
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [currentMessages]);
 
     // ═══════ Handlers ═══════
-    const handleChannelClick = (channel: string) => {
-        if (channel === 'voice') {
-            setActiveChannel('voice');
-            if (!inVoice) {
+    const handleChannelClick = async (channel: Channel) => {
+        setActiveChannel(channel);
+        if (channel.type === 'voice') {
+            if (!inVoice || voiceRoomId !== channel.id) {
                 const videoId = localStorage.getItem('cuicall-video-input') || undefined;
                 const audioId = localStorage.getItem('cuicall-audio-input') || undefined;
-                joinVoice('cuicall-voice-main', videoId, audioId);
+                await joinVoice(channel.id, videoId, audioId);
             }
+            await fetchMessages(channel.id);
         } else {
-            setActiveChannel(channel);
-            joinTextChannel(`cuicall-${channel}`);
-            // A chamada de voz NÃO cai, continua rodando em background!
+            await joinTextChannel(channel.id);
+            await fetchMessages(channel.id);
+            // Chamada de voz continua rodando em background!
         }
     };
 
     const handleLeaveVoice = () => {
         leaveVoice();
-        if (activeChannel === 'voice') {
+        if (activeChannel?.type === 'voice') {
             setActiveChannel(null);
         }
     };
@@ -118,19 +181,38 @@ function App() {
         stopAllMedia();
         await supabase.auth.signOut();
         setActiveChannel(null);
+        setSelectedServer(null);
     };
 
-    const handleSendMessage = () => {
-        if (chatInput.trim() && currentChatChannelId) {
-            sendMessage(chatInput, currentChatChannelId);
-            setChatInput('');
+    const handleSendMessage = async () => {
+        if (!chatInput.trim() || !activeChannel || !session?.user) return;
+        const textToSend = chatInput.trim();
+        const channelId = activeChannel.id;
+        setChatInput('');
+
+        // 1. Persiste no banco de dados (Supabase)
+        const { error } = await supabase.from('messages').insert([
+            { channel_id: channelId, user_id: session.user.id, content: textToSend }
+        ]);
+
+        if (error) {
+            console.error('Erro ao salvar mensagem no Supabase:', error);
         }
+
+        // 2. Dispara no SignalR para sincronização em tempo real
+        await sendMessage(textToSend, channelId);
+
+        // 3. Atualiza localmente no estado da tela
+        setChannelMessages(prev => ({
+            ...prev,
+            [channelId]: [...(prev[channelId] || []), { senderId: userName, text: textToSend }]
+        }));
     };
 
     const handleCopyInvite = () => {
-        const inviteTarget = activeChannel === 'voice' 
-            ? 'cuicall-voice-main' 
-            : (activeChannel ? `cuicall-${activeChannel}` : 'cuicall-home');
+        const inviteTarget = activeChannel 
+            ? activeChannel.id 
+            : (selectedServer ? selectedServer.id : 'cuicall-home');
         navigator.clipboard.writeText(inviteTarget);
         toast({
             title: 'ID copiado!',
@@ -154,8 +236,8 @@ function App() {
         return <Auth />;
     }
 
-    const userEmail = session.user?.email ?? 'Usuário';
-    const userName = userEmail.split('@')[0];
+    const textChannels = channels.filter(c => c.type === 'text');
+    const voiceChannels = channels.filter(c => c.type === 'voice');
 
     return (
         <Flex h="100vh" overflow="hidden">
@@ -241,25 +323,44 @@ function App() {
                     </Tooltip>
                 </Flex>
 
-                {/* Channel List */}
+                {/* Channel List Dinâmica do Supabase */}
                 <VStack align="stretch" flex="1" overflowY="auto" px={2} py={4} spacing={1}>
+                    {/* Text Channels */}
                     <Text fontSize="xs" fontWeight="bold" color="gray.500" px={2} mb={1} textTransform="uppercase" letterSpacing="wider">
                         Canais de Texto
                     </Text>
-                    <ChannelItem label="# geral" isActive={activeChannel === 'geral'} onClick={() => handleChannelClick('geral')} />
-                    <ChannelItem label="# ajuda" isActive={activeChannel === 'ajuda'} onClick={() => handleChannelClick('ajuda')} />
+                    {textChannels.length === 0 ? (
+                        <Text fontSize="xs" color="gray.600" px={2} fontStyle="italic">Nenhum canal de texto</Text>
+                    ) : (
+                        textChannels.map((c) => (
+                            <ChannelItem
+                                key={c.id}
+                                label={`# ${c.name}`}
+                                isActive={activeChannel?.id === c.id}
+                                onClick={() => handleChannelClick(c)}
+                            />
+                        ))
+                    )}
 
                     <Box h={4} />
 
+                    {/* Voice Channels */}
                     <Text fontSize="xs" fontWeight="bold" color="gray.500" px={2} mb={1} textTransform="uppercase" letterSpacing="wider">
                         Canais de Voz
                     </Text>
-                    <ChannelItem 
-                        label="🔊 Sala de Vídeo" 
-                        isActive={activeChannel === 'voice'} 
-                        isConnected={inVoice}
-                        onClick={() => handleChannelClick('voice')} 
-                    />
+                    {voiceChannels.length === 0 ? (
+                        <Text fontSize="xs" color="gray.600" px={2} fontStyle="italic">Nenhum canal de voz</Text>
+                    ) : (
+                        voiceChannels.map((c) => (
+                            <ChannelItem 
+                                key={c.id}
+                                label={`🔊 ${c.name}`} 
+                                isActive={activeChannel?.id === c.id} 
+                                isConnected={inVoice && voiceRoomId === c.id}
+                                onClick={() => handleChannelClick(c)} 
+                            />
+                        ))
+                    )}
 
                     {/* Indicador de conectado na voz em background */}
                     {inVoice && (
@@ -324,15 +425,15 @@ function App() {
                 {/* Top bar */}
                 <Flex h="48px" px={4} align="center" borderBottom="1px solid" borderColor="gray.600" bg="gray.700" gap={3} flexShrink={0}>
                     <Text fontWeight="bold" color="white">
-                        {activeChannel === 'voice' ? '🔊 Sala de Vídeo' : (activeChannel ? `# ${activeChannel}` : selectedServer?.name || 'CuiCall')}
+                        {activeChannel ? (activeChannel.type === 'voice' ? `🔊 ${activeChannel.name}` : `# ${activeChannel.name}`) : (selectedServer?.name || 'CuiCall')}
                     </Text>
                     <Box w="1px" h="24px" bg="gray.600" />
                     <Text fontSize="sm" color="gray.400">
-                        {activeChannel === 'voice' 
-                            ? 'Chamada de Voz e Vídeo P2P' 
-                            : (activeChannel ? 'Canal de texto do servidor' : 'Bem-vindo ao servidor')}
+                        {activeChannel 
+                            ? (activeChannel.type === 'voice' ? 'Chamada de Voz e Vídeo P2P' : 'Canal de texto do servidor')
+                            : 'Bem-vindo ao servidor'}
                     </Text>
-                    {activeChannel === 'voice' && inVoice && (
+                    {activeChannel?.type === 'voice' && inVoice && (
                         <HStack ml="auto" spacing={2}>
                             <Button size="sm" colorScheme="purple" variant="outline" onClick={shareScreen} leftIcon={<BsShareFill />}>
                                 Compartilhar Tela
@@ -342,7 +443,7 @@ function App() {
                 </Flex>
 
                 {/* Main Content */}
-                {activeChannel === 'voice' ? (
+                {activeChannel?.type === 'voice' ? (
                     <Flex flex="1" overflow="hidden">
                         {/* Video Grid */}
                         <Flex flex="1" flexDir="column" p={4} gap={4} overflow="auto">
@@ -397,8 +498,8 @@ function App() {
                                 {currentMessages.length === 0 && (
                                     <Flex flex="1" align="center" justify="center" flexDir="column" gap={4} minH="300px">
                                         <Image src={logo} alt="CuiCall" maxH="80px" objectFit="contain" opacity={0.4} />
-                                        <Heading size="md" color="gray.500">Bem-vindo ao # {activeChannel}!</Heading>
-                                        <Text color="gray.600" fontSize="sm">Este é o início do canal #{activeChannel}. Comece a conversa!</Text>
+                                        <Heading size="md" color="gray.500">Bem-vindo ao # {activeChannel.name}!</Heading>
+                                        <Text color="gray.600" fontSize="sm">Este é o início do canal #{activeChannel.name}. Comece a conversa!</Text>
                                     </Flex>
                                 )}
                                 {currentMessages.map((msg, idx) => (
@@ -406,7 +507,7 @@ function App() {
                                         <Avatar size="sm" name={msg.senderId.slice(0, 5)} bg="teal.600" mt={1} />
                                         <Box>
                                             <HStack spacing={2}>
-                                                <Text fontSize="sm" fontWeight="bold" color="gray.200">{msg.senderId.slice(0, 8)}</Text>
+                                                <Text fontSize="sm" fontWeight="bold" color="gray.200">{msg.senderId}</Text>
                                                 <Text fontSize="xs" color="gray.500">agora</Text>
                                             </HStack>
                                             <Text fontSize="sm" color="gray.300">{msg.text}</Text>
@@ -418,7 +519,7 @@ function App() {
                         </Box>
                         <Box px={4} py={3} borderTop="1px solid" borderColor="gray.600">
                             <Input
-                                placeholder={`Conversar em # ${activeChannel}`}
+                                placeholder={`Conversar em # ${activeChannel.name}`}
                                 value={chatInput}
                                 onChange={(e) => setChatInput(e.target.value)}
                                 onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
@@ -434,7 +535,7 @@ function App() {
                         <Image src={logo} alt="CuiCall" maxH="100px" objectFit="contain" opacity={0.5} />
                         <Heading size="lg" color="gray.300">{selectedServer?.name || 'CuiCall Home'}</Heading>
                         <Text color="gray.400" textAlign="center" maxW="450px">
-                            Selecione um canal de texto na barra lateral para conversar ou entre no canal de voz 🔊 Sala de Vídeo para iniciar uma chamada.
+                            Selecione um canal de texto na barra lateral para ver o histórico e conversar, ou entre em um canal de voz para iniciar uma chamada.
                         </Text>
                     </Flex>
                 )}
@@ -501,7 +602,7 @@ function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage, messa
                         <HStack key={idx} spacing={2} align="start">
                             <Avatar size="xs" name={msg.senderId.slice(0, 5)} bg="teal.600" mt={0.5} />
                             <Box>
-                                <Text fontSize="xs" color="gray.400">{msg.senderId.slice(0, 8)}</Text>
+                                <Text fontSize="xs" color="gray.400">{msg.senderId}</Text>
                                 <Text fontSize="sm" color="gray.200">{msg.text}</Text>
                             </Box>
                         </HStack>

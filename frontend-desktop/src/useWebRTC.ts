@@ -251,6 +251,13 @@ export const useWebRTC = () => {
         await hub.invoke("SendMessage", text, channelId);
     }, [getHubConnection]);
 
+    const loadChannelMessages = useCallback((channelId: string, msgs: ChatMessage[]) => {
+        setChannelMessages(prev => ({
+            ...prev,
+            [channelId]: msgs,
+        }));
+    }, []);
+
     const stopAllMedia = useCallback(() => {
         leaveVoice();
         connectionRef.current?.stop();
@@ -265,6 +272,8 @@ export const useWebRTC = () => {
         isCamOff,
         isMuted,
         channelMessages,
+        setChannelMessages,
+        loadChannelMessages,
         joinVoice,
         leaveVoice,
         joinTextChannel,
