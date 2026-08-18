@@ -19,6 +19,7 @@ var app = builder.Build();
 
 app.UseCors("AllowAll");
 
+app.MapGet("/", () => "CuiCall Signaling Server Online");
 app.MapHub<CallHub>("/callHub");
 
 app.Run();
