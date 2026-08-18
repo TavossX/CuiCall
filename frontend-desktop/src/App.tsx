@@ -11,8 +11,7 @@ import { BsMicFill, BsMicMuteFill, BsCameraVideoFill, BsCameraVideoOffFill, BsTe
 function App() {
     const [isLoading, setIsLoading] = useState(true);
     const [session, setSession] = useState<any>(null);
-    const [inVoice, setInVoice] = useState(false);
-    const [activeChannel, setActiveChannel] = useState('geral');
+    const [activeChannel, setActiveChannel] = useState<string | null>(null);
     const [chatInput, setChatInput] = useState('');
     const [servers, setServers] = useState<any[]>([]);
     const [selectedServer, setSelectedServer] = useState<any | null>(null);
@@ -21,16 +20,14 @@ function App() {
     const createServerDisclosure = useDisclosure();
     const toast = useToast();
 
-    // Determine roomIds for the hook
-    const voiceRoomId = inVoice ? 'cuicall-voice-main' : '';
-    const chatChannelId = !inVoice ? `cuicall-${activeChannel}` : '';
-
+    // Hook global no nível raiz do App
     const {
-        localStream, remoteStream, messages,
-        isCamOff, isMuted,
-        startCamera, shareScreen, toggleMute, toggleCamera,
+        localStream, remoteStream, inVoice,
+        isCamOff, isMuted, channelMessages,
+        joinVoice, leaveVoice, joinTextChannel,
+        toggleMute, toggleCamera, shareScreen,
         sendMessage, stopAllMedia,
-    } = useWebRTC(voiceRoomId, chatChannelId);
+    } = useWebRTC();
 
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -75,69 +72,74 @@ function App() {
         if (localVideoRef.current && localStream && !isCamOff) {
             localVideoRef.current.srcObject = localStream;
         }
-    }, [localStream, isCamOff]);
+    }, [localStream, isCamOff, activeChannel]);
 
     useEffect(() => {
         if (remoteVideoRef.current && remoteStream) {
             remoteVideoRef.current.srcObject = remoteStream;
         }
-    }, [remoteStream]);
+    }, [remoteStream, activeChannel]);
+
+    // Current room ID for chat
+    const currentChatChannelId = activeChannel === 'voice' 
+        ? 'cuicall-voice-main' 
+        : (activeChannel ? `cuicall-${activeChannel}` : '');
+
+    const currentMessages = currentChatChannelId ? (channelMessages[currentChatChannelId] || []) : [];
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
+    }, [currentMessages]);
 
     // ═══════ Handlers ═══════
-    const handleJoinVoice = async () => {
-        const videoId = localStorage.getItem('cuicall-video-input') || undefined;
-        const audioId = localStorage.getItem('cuicall-audio-input') || undefined;
-        await startCamera(videoId, audioId);
-        setInVoice(true);
-        setActiveChannel('voice');
+    const handleChannelClick = (channel: string) => {
+        if (channel === 'voice') {
+            setActiveChannel('voice');
+            if (!inVoice) {
+                const videoId = localStorage.getItem('cuicall-video-input') || undefined;
+                const audioId = localStorage.getItem('cuicall-audio-input') || undefined;
+                joinVoice('cuicall-voice-main', videoId, audioId);
+            }
+        } else {
+            setActiveChannel(channel);
+            joinTextChannel(`cuicall-${channel}`);
+            // A chamada de voz NÃO cai, continua rodando em background!
+        }
     };
 
     const handleLeaveVoice = () => {
-        stopAllMedia();
-        setInVoice(false);
-        setActiveChannel('geral');
+        leaveVoice();
+        if (activeChannel === 'voice') {
+            setActiveChannel(null);
+        }
     };
 
     const handleLogout = async () => {
         stopAllMedia();
         await supabase.auth.signOut();
-        setInVoice(false);
+        setActiveChannel(null);
     };
 
     const handleSendMessage = () => {
-        if (chatInput.trim()) {
-            sendMessage(chatInput);
+        if (chatInput.trim() && currentChatChannelId) {
+            sendMessage(chatInput, currentChatChannelId);
             setChatInput('');
         }
     };
 
     const handleCopyInvite = () => {
-        const roomId = inVoice ? 'cuicall-voice-main' : `cuicall-${activeChannel}`;
-        navigator.clipboard.writeText(roomId);
+        const inviteTarget = activeChannel === 'voice' 
+            ? 'cuicall-voice-main' 
+            : (activeChannel ? `cuicall-${activeChannel}` : 'cuicall-home');
+        navigator.clipboard.writeText(inviteTarget);
         toast({
             title: 'ID copiado!',
-            description: `"${roomId}" copiado para a área de transferência.`,
+            description: `"${inviteTarget}" copiado para a área de transferência.`,
             status: 'success',
             duration: 2000,
             isClosable: true,
             position: 'top',
         });
-    };
-
-    const handleChannelClick = (channel: string) => {
-        if (channel === 'voice') {
-            handleJoinVoice();
-        } else {
-            if (inVoice) {
-                stopAllMedia();
-                setInVoice(false);
-            }
-            setActiveChannel(channel);
-        }
     };
 
     // ═══════ Loading / Auth gates ═══════
@@ -154,9 +156,6 @@ function App() {
 
     const userEmail = session.user?.email ?? 'Usuário';
     const userName = userEmail.split('@')[0];
-
-    // Helper: is the main stage showing voice?
-    const isVoiceStage = inVoice && activeChannel === 'voice';
 
     return (
         <Flex h="100vh" overflow="hidden">
@@ -247,26 +246,32 @@ function App() {
                     <Text fontSize="xs" fontWeight="bold" color="gray.500" px={2} mb={1} textTransform="uppercase" letterSpacing="wider">
                         Canais de Texto
                     </Text>
-                    <ChannelItem label="# geral" isActive={activeChannel === 'geral' && !inVoice} onClick={() => handleChannelClick('geral')} />
-                    <ChannelItem label="# ajuda" isActive={activeChannel === 'ajuda' && !inVoice} onClick={() => handleChannelClick('ajuda')} />
+                    <ChannelItem label="# geral" isActive={activeChannel === 'geral'} onClick={() => handleChannelClick('geral')} />
+                    <ChannelItem label="# ajuda" isActive={activeChannel === 'ajuda'} onClick={() => handleChannelClick('ajuda')} />
 
                     <Box h={4} />
 
                     <Text fontSize="xs" fontWeight="bold" color="gray.500" px={2} mb={1} textTransform="uppercase" letterSpacing="wider">
                         Canais de Voz
                     </Text>
-                    <ChannelItem label="🔊 Sala de Vídeo" isActive={activeChannel === 'voice'} onClick={() => handleChannelClick('voice')} />
+                    <ChannelItem 
+                        label="🔊 Sala de Vídeo" 
+                        isActive={activeChannel === 'voice'} 
+                        isConnected={inVoice}
+                        onClick={() => handleChannelClick('voice')} 
+                    />
 
+                    {/* Indicador de conectado na voz em background */}
                     {inVoice && (
                         <Box pl={8} py={1}>
                             <HStack spacing={2}>
                                 <Box w={2} h={2} borderRadius="full" bg="green.400" />
-                                <Text fontSize="xs" color="gray.400">{userName}</Text>
+                                <Text fontSize="xs" color="green.300" fontWeight="medium">{userName}</Text>
                             </HStack>
                             {remoteStream && (
                                 <HStack spacing={2} mt={1}>
                                     <Box w={2} h={2} borderRadius="full" bg="green.400" />
-                                    <Text fontSize="xs" color="gray.400">Convidado</Text>
+                                    <Text fontSize="xs" color="green.300" fontWeight="medium">Convidado</Text>
                                 </HStack>
                             )}
                         </Box>
@@ -279,22 +284,24 @@ function App() {
                         <Avatar size="sm" name={userName} bg="blue.600" color="white" />
                         <Box flex="1" minW={0}>
                             <Text fontSize="xs" fontWeight="bold" color="white" isTruncated>{userName}</Text>
-                            <Text fontSize="10px" color="gray.500" isTruncated>Online</Text>
+                            <Text fontSize="10px" color={inVoice ? 'green.400' : 'gray.500'} isTruncated>
+                                {inVoice ? 'Voz Conectada' : 'Online'}
+                            </Text>
                         </Box>
                         <HStack spacing={0}>
                             <Tooltip label={isMuted ? 'Ativar Microfone' : 'Mutar Microfone'}>
                                 <IconButton aria-label="Mic" icon={isMuted ? <BsMicMuteFill /> : <BsMicFill />} size="xs" variant="ghost"
                                     color={isMuted ? 'red.400' : 'gray.400'} _hover={{ color: isMuted ? 'red.300' : 'white', bg: 'gray.700' }}
-                                    onClick={toggleMute} />
+                                    onClick={toggleMute} isDisabled={!inVoice} />
                             </Tooltip>
                             <Tooltip label={isCamOff ? 'Ligar Câmera' : 'Desligar Câmera'}>
                                 <IconButton aria-label="Cam" icon={isCamOff ? <BsCameraVideoOffFill /> : <BsCameraVideoFill />} size="xs" variant="ghost"
                                     color={isCamOff ? 'red.400' : 'gray.400'} _hover={{ color: isCamOff ? 'red.300' : 'white', bg: 'gray.700' }}
-                                    onClick={toggleCamera} />
+                                    onClick={toggleCamera} isDisabled={!inVoice} />
                             </Tooltip>
                             <Tooltip label="Desconectar da Voz">
                                 <IconButton aria-label="Leave" icon={<BsTelephoneXFill />} size="xs" variant="ghost"
-                                    color="gray.400" _hover={{ color: 'red.400', bg: 'gray.700' }}
+                                    color={inVoice ? 'red.400' : 'gray.600'} _hover={{ color: 'red.300', bg: 'gray.700' }}
                                     onClick={handleLeaveVoice} isDisabled={!inVoice} />
                             </Tooltip>
                             <Tooltip label="Configurações">
@@ -317,13 +324,15 @@ function App() {
                 {/* Top bar */}
                 <Flex h="48px" px={4} align="center" borderBottom="1px solid" borderColor="gray.600" bg="gray.700" gap={3} flexShrink={0}>
                     <Text fontWeight="bold" color="white">
-                        {isVoiceStage ? '🔊 Sala de Vídeo' : `# ${activeChannel}`}
+                        {activeChannel === 'voice' ? '🔊 Sala de Vídeo' : (activeChannel ? `# ${activeChannel}` : selectedServer?.name || 'CuiCall')}
                     </Text>
                     <Box w="1px" h="24px" bg="gray.600" />
                     <Text fontSize="sm" color="gray.400">
-                        {isVoiceStage ? 'Chamada P2P ativa' : 'Canal de texto do servidor'}
+                        {activeChannel === 'voice' 
+                            ? 'Chamada de Voz e Vídeo P2P' 
+                            : (activeChannel ? 'Canal de texto do servidor' : 'Bem-vindo ao servidor')}
                     </Text>
-                    {isVoiceStage && (
+                    {activeChannel === 'voice' && inVoice && (
                         <HStack ml="auto" spacing={2}>
                             <Button size="sm" colorScheme="purple" variant="outline" onClick={shareScreen} leftIcon={<BsShareFill />}>
                                 Compartilhar Tela
@@ -333,7 +342,7 @@ function App() {
                 </Flex>
 
                 {/* Main Content */}
-                {isVoiceStage ? (
+                {activeChannel === 'voice' ? (
                     <Flex flex="1" overflow="hidden">
                         {/* Video Grid */}
                         <Flex flex="1" flexDir="column" p={4} gap={4} overflow="auto">
@@ -377,22 +386,22 @@ function App() {
                         </Flex>
 
                         {/* Voice Chat Panel */}
-                        <ChatPanel messages={messages} chatInput={chatInput} setChatInput={setChatInput}
+                        <ChatPanel messages={currentMessages} chatInput={chatInput} setChatInput={setChatInput}
                             handleSendMessage={handleSendMessage} messagesEndRef={messagesEndRef} />
                     </Flex>
-                ) : (
+                ) : activeChannel ? (
                     /* Text Channel View */
                     <Flex flex="1" overflow="hidden" flexDir="column">
                         <Box flex="1" overflowY="auto" px={4} py={4}>
                             <VStack align="stretch" spacing={3}>
-                                {messages.length === 0 && (
+                                {currentMessages.length === 0 && (
                                     <Flex flex="1" align="center" justify="center" flexDir="column" gap={4} minH="300px">
                                         <Image src={logo} alt="CuiCall" maxH="80px" objectFit="contain" opacity={0.4} />
                                         <Heading size="md" color="gray.500">Bem-vindo ao # {activeChannel}!</Heading>
-                                        <Text color="gray.600" fontSize="sm">Este é o início do canal. Diga algo!</Text>
+                                        <Text color="gray.600" fontSize="sm">Este é o início do canal #{activeChannel}. Comece a conversa!</Text>
                                     </Flex>
                                 )}
-                                {messages.map((msg, idx) => (
+                                {currentMessages.map((msg, idx) => (
                                     <HStack key={idx} spacing={3} align="start">
                                         <Avatar size="sm" name={msg.senderId.slice(0, 5)} bg="teal.600" mt={1} />
                                         <Box>
@@ -419,6 +428,15 @@ function App() {
                             />
                         </Box>
                     </Flex>
+                ) : (
+                    /* Welcome / No channel selected */
+                    <Flex flex="1" align="center" justify="center" flexDir="column" gap={4} p={8}>
+                        <Image src={logo} alt="CuiCall" maxH="100px" objectFit="contain" opacity={0.5} />
+                        <Heading size="lg" color="gray.300">{selectedServer?.name || 'CuiCall Home'}</Heading>
+                        <Text color="gray.400" textAlign="center" maxW="450px">
+                            Selecione um canal de texto na barra lateral para conversar ou entre no canal de voz 🔊 Sala de Vídeo para iniciar uma chamada.
+                        </Text>
+                    </Flex>
                 )}
             </Flex>
 
@@ -426,7 +444,7 @@ function App() {
             <Flex w="240px" minW="240px" bg="gray.800" flexDir="column" borderLeft="1px solid" borderColor="gray.700" display={{ base: 'none', xl: 'flex' }}>
                 <Box px={4} py={4}>
                     <Text fontSize="xs" fontWeight="bold" color="gray.500" textTransform="uppercase" letterSpacing="wider" mb={3}>
-                        Online — {inVoice ? (remoteStream ? 2 : 1) : 1}
+                        Membros Online — {inVoice ? (remoteStream ? 2 : 1) : 1}
                     </Text>
                     <VStack align="stretch" spacing={2}>
                         <MemberItem name={userName} letter={userEmail.charAt(0).toUpperCase()} bg="blue.600"
@@ -451,15 +469,17 @@ function App() {
 
 // ═══════ Subcomponents ═══════
 
-function ChannelItem({ label, isActive, onClick }: { label: string; isActive: boolean; onClick: () => void }) {
+function ChannelItem({ label, isActive, isConnected, onClick }: { label: string; isActive: boolean; isConnected?: boolean; onClick: () => void }) {
     return (
         <Flex px={2} py={1.5} borderRadius="md" cursor="pointer"
+            align="center" justify="space-between"
             bg={isActive ? 'gray.700' : 'transparent'}
             color={isActive ? 'white' : 'gray.400'}
             _hover={{ bg: isActive ? 'gray.700' : 'gray.750', color: 'gray.200' }}
             transition="all 0.15s" onClick={onClick}
             fontSize="sm" fontWeight={isActive ? 'semibold' : 'normal'}>
-            {label}
+            <Text>{label}</Text>
+            {isConnected && <Box w={2} h={2} borderRadius="full" bg="green.400" />}
         </Flex>
     );
 }
