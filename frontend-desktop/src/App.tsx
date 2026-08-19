@@ -43,7 +43,7 @@ function App() {
     const {
         localStream, remoteStream, inVoice, voiceRoomId,
         isCamOff, isMuted, channelMessages,
-        setChannelMessages, loadChannelMessages,
+        loadChannelMessages,
         joinVoice, leaveVoice, joinTextChannel,
         toggleMute, toggleCamera, shareScreen,
         sendMessage, stopAllMedia,
