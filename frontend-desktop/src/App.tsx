@@ -262,8 +262,7 @@ function App() {
 
     const handleCopyInvite = () => {
         if (!selectedServer) return;
-        const landingPageUrl = import.meta.env.VITE_LANDING_PAGE_URL || 'http://localhost:5173';
-        const inviteUrl = `${landingPageUrl}/invite/${selectedServer.id}`;
+        const inviteUrl = `https://cui-call.vercel.app/#/invite/${selectedServer.id}`;
         
         navigator.clipboard.writeText(inviteUrl);
         toast({
