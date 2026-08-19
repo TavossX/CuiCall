@@ -8,6 +8,7 @@
 create table if not exists public.servers (
     id uuid default gen_random_uuid() primary key,
     name text not null,
+    description text,
     icon_url text,
     owner_id uuid references auth.users(id) on delete cascade not null,
     created_at timestamptz default now() not null
@@ -44,6 +45,15 @@ create table if not exists public.messages (
     created_at timestamptz default now() not null
 );
 
+-- 5. TABELA DE PERFIS DE USUÁRIOS
+-- Informações públicas de perfil (nome e avatar)
+create table if not exists public.profiles (
+    id uuid references auth.users(id) on delete cascade primary key,
+    display_name text,
+    avatar_url text,
+    updated_at timestamptz default now()
+);
+
 -- ═══════════════════════════════════════════════════════
 -- ÍNDICES (Performance)
 -- ═══════════════════════════════════════════════════════
@@ -65,75 +75,97 @@ alter table public.channels enable row level security;
 alter table public.server_members enable row level security;
 alter table public.messages enable row level security;
 
+-- Função auxiliar para evitar recursão infinita no RLS
+create or replace function public.is_server_member(_server_id uuid)
+returns boolean
+language sql security definer set search_path = public
+as $$
+  select exists (
+    select 1
+    from server_members
+    where server_id = _server_id
+    and user_id = auth.uid()
+  );
+$$;
+
 -- SERVERS: Qualquer usuário logado pode ver servidores dos quais é membro
+drop policy if exists "Membros podem ver seus servidores" on public.servers;
 create policy "Membros podem ver seus servidores"
     on public.servers for select
     using (
-        id in (select server_id from public.server_members where user_id = auth.uid())
+        owner_id = auth.uid() or is_server_member(id)
     );
 
 -- SERVERS: Qualquer usuário logado pode criar um servidor
+drop policy if exists "Usuários logados podem criar servidores" on public.servers;
 create policy "Usuários logados podem criar servidores"
     on public.servers for insert
     with check (auth.uid() = owner_id);
 
 -- SERVERS: Apenas o dono pode editar/deletar
+drop policy if exists "Donos podem editar seus servidores" on public.servers;
 create policy "Donos podem editar seus servidores"
     on public.servers for update
     using (owner_id = auth.uid());
 
+drop policy if exists "Donos podem deletar seus servidores" on public.servers;
 create policy "Donos podem deletar seus servidores"
     on public.servers for delete
     using (owner_id = auth.uid());
 
 -- CHANNELS: Membros do servidor podem ver os canais
+drop policy if exists "Membros podem ver canais do servidor" on public.channels;
 create policy "Membros podem ver canais do servidor"
     on public.channels for select
     using (
-        server_id in (select server_id from public.server_members where user_id = auth.uid())
+        is_server_member(server_id)
     );
 
 -- CHANNELS: Donos/admins podem criar canais
+drop policy if exists "Donos e admins podem criar canais" on public.channels;
 create policy "Donos e admins podem criar canais"
     on public.channels for insert
     with check (
-        server_id in (
-            select server_id from public.server_members
-            where user_id = auth.uid() and role in ('owner', 'admin')
+        is_server_member(server_id) and 
+        exists (
+            select 1 from public.server_members
+            where server_id = channels.server_id and user_id = auth.uid() and role in ('owner', 'admin')
         )
     );
 
 -- SERVER_MEMBERS: Membros podem ver quem está no servidor
+drop policy if exists "Membros podem ver outros membros" on public.server_members;
 create policy "Membros podem ver outros membros"
     on public.server_members for select
     using (
-        server_id in (select server_id from public.server_members where user_id = auth.uid())
+        user_id = auth.uid() or is_server_member(server_id)
     );
 
 -- SERVER_MEMBERS: Qualquer logado pode entrar (insert) em servidores
+drop policy if exists "Usuários podem entrar em servidores" on public.server_members;
 create policy "Usuários podem entrar em servidores"
     on public.server_members for insert
     with check (auth.uid() = user_id);
 
 -- MESSAGES: Membros do servidor podem ler mensagens dos canais
+drop policy if exists "Membros podem ler mensagens" on public.messages;
 create policy "Membros podem ler mensagens"
     on public.messages for select
     using (
         channel_id in (
-            select c.id from public.channels c
-            join public.server_members sm on sm.server_id = c.server_id
-            where sm.user_id = auth.uid()
+            select id from public.channels
+            where is_server_member(server_id)
         )
     );
 
 -- MESSAGES: Membros podem enviar mensagens
+drop policy if exists "Membros podem enviar mensagens" on public.messages;
 create policy "Membros podem enviar mensagens"
     on public.messages for insert
     with check (
         auth.uid() = user_id
         and channel_id in (
-            select c.id from public.channels c
-            join public.server_members sm on sm.server_id = c.server_id
-            where sm.user_id = auth.uid()
+            select id from public.channels
+            where is_server_member(server_id)
         )
     );

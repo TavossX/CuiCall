@@ -6,7 +6,11 @@ import { supabase } from './supabaseClient';
 import { Auth } from './components/Auth';
 import { SettingsModal } from './components/SettingsModal';
 import { CreateServerModal } from './components/CreateServerModal';
-import { BsMicFill, BsMicMuteFill, BsCameraVideoFill, BsCameraVideoOffFill, BsTelephoneXFill, BsBoxArrowRight, BsShareFill, BsGearFill, BsClipboard, BsPlusLg } from 'react-icons/bs';
+import { CreateChannelModal } from './components/CreateChannelModal';
+import { EditServerModal } from './components/EditServerModal';
+import { JoinServerModal } from './components/JoinServerModal';
+import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
+import { BsMicFill, BsMicMuteFill, BsCameraVideoFill, BsCameraVideoOffFill, BsTelephoneXFill, BsBoxArrowRight, BsShareFill, BsGearFill, BsClipboard, BsPlusLg, BsCompass } from 'react-icons/bs';
 
 export interface Channel {
     id: string;
@@ -27,7 +31,13 @@ function App() {
 
     const settingsDisclosure = useDisclosure();
     const createServerDisclosure = useDisclosure();
+    const createChannelDisclosure = useDisclosure();
+    const editServerDisclosure = useDisclosure();
+    const joinServerDisclosure = useDisclosure();
     const toast = useToast();
+
+    const [channelTypeToCreate, setChannelTypeToCreate] = useState<'text' | 'voice'>('text');
+    const [userProfile, setUserProfile] = useState<{ display_name?: string; avatar_url?: string } | null>(null);
 
     // Hook global no nível raiz do App
     const {
@@ -44,7 +54,8 @@ function App() {
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const userEmail = session?.user?.email ?? 'Usuário';
-    const userName = userEmail.split('@')[0];
+    const userName = userProfile?.display_name || userEmail.split('@')[0];
+    const userAvatar = userProfile?.avatar_url || '';
 
     // ═══════ Auth & Servers ═══════
     const fetchServers = async () => {
@@ -63,21 +74,61 @@ function App() {
         }
     };
 
+    const fetchUserProfile = async (userId: string) => {
+        const { data } = await supabase.from('profiles').select('*').eq('id', userId).single();
+        if (data) setUserProfile(data);
+    };
+
     useEffect(() => {
         supabase.auth.getSession().then(({ data: { session } }) => {
             setSession(session);
             setIsLoading(false);
             if (session) {
                 fetchServers();
+                fetchUserProfile(session.user.id);
             }
         });
         const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
             setSession(session);
             if (session) {
                 fetchServers();
+                fetchUserProfile(session.user.id);
             }
         });
         return () => subscription.unsubscribe();
+    }, []);
+
+    useEffect(() => {
+        let unlisten: () => void;
+        async function setupDeepLink() {
+            try {
+                unlisten = await onOpenUrl(async (urls) => {
+                    for (const url of urls) {
+                        if (url.startsWith('cuicall://invite/')) {
+                            const inviteId = url.replace('cuicall://invite/', '');
+                            const { data: { user } } = await supabase.auth.getUser();
+                            if (user && inviteId) {
+                                const { error } = await supabase.from('server_members').insert([
+                                    { server_id: inviteId, user_id: user.id, role: 'member' }
+                                ]);
+                                if (!error || error.code === '23505') {
+                                    toast({ title: 'Servidor adicionado via link!', status: 'success' });
+                                    fetchServers();
+                                } else {
+                                    toast({ title: 'Erro ao entrar via link', description: error.message, status: 'error' });
+                                }
+                            }
+                        }
+                    }
+                });
+            } catch (err) {
+                console.error("Deep link plugin error:", err);
+            }
+        }
+        setupDeepLink();
+        return () => {
+            if (unlisten) unlisten();
+        };
     }, []);
 
     // ═══════ Canais Dinâmicos por Servidor ═══════
@@ -210,13 +261,14 @@ function App() {
     };
 
     const handleCopyInvite = () => {
-        const inviteTarget = activeChannel 
-            ? activeChannel.id 
-            : (selectedServer ? selectedServer.id : 'cuicall-home');
-        navigator.clipboard.writeText(inviteTarget);
+        if (!selectedServer) return;
+        const landingPageUrl = import.meta.env.VITE_LANDING_PAGE_URL || 'http://localhost:5173';
+        const inviteUrl = `${landingPageUrl}/invite/${selectedServer.id}`;
+        
+        navigator.clipboard.writeText(inviteUrl);
         toast({
-            title: 'ID copiado!',
-            description: `"${inviteTarget}" copiado para a área de transferência.`,
+            title: 'Link copiado!',
+            description: `Link de convite copiado para a área de transferência.`,
             status: 'success',
             duration: 2000,
             isClosable: true,
@@ -283,8 +335,13 @@ function App() {
                                 _hover={{ borderRadius: 'xl', bg: 'blue.500' }}
                                 transition="all 0.2s"
                                 onClick={() => setSelectedServer(server)}
+                                overflow="hidden"
                             >
-                                {initials}
+                                {server.icon_url ? (
+                                    <Image src={server.icon_url} alt={server.name} w="full" h="full" objectFit="cover" />
+                                ) : (
+                                    initials
+                                )}
                             </Box>
                         </Tooltip>
                     );
@@ -304,6 +361,19 @@ function App() {
                         <BsPlusLg />
                     </Box>
                 </Tooltip>
+
+                {/* Botão de Entrar em Servidor */}
+                <Tooltip label="Entrar em Servidor" placement="right">
+                    <Box
+                        w="48px" h="48px" borderRadius="full" cursor="pointer" bg="gray.800"
+                        display="flex" alignItems="center" justifyContent="center"
+                        _hover={{ borderRadius: 'xl', bg: 'blue.600', color: 'white' }}
+                        transition="all 0.2s" color="blue.400" fontSize="20px"
+                        onClick={joinServerDisclosure.onOpen}
+                    >
+                        <BsCompass />
+                    </Box>
+                </Tooltip>
             </Flex>
 
             {/* ═══════ Column 2: Channel Sidebar (240px) ═══════ */}
@@ -313,22 +383,41 @@ function App() {
                     <Heading size="sm" color="white" fontWeight="bold" isTruncated maxW="170px">
                         {selectedServer?.name || 'CuiCall Home'}
                     </Heading>
-                    <Tooltip label="Convidar Amigo">
-                        <IconButton
-                            aria-label="Copy Invite" icon={<BsClipboard />}
-                            size="xs" variant="ghost" color="gray.400"
-                            _hover={{ color: 'white', bg: 'gray.700' }}
-                            onClick={handleCopyInvite}
-                        />
-                    </Tooltip>
+                    <HStack>
+                        {selectedServer && (
+                            <Tooltip label="Configurações do Servidor">
+                                <IconButton
+                                    aria-label="Edit Server" icon={<BsGearFill />}
+                                    size="xs" variant="ghost" color="gray.400"
+                                    _hover={{ color: 'white', bg: 'gray.700' }}
+                                    onClick={editServerDisclosure.onOpen}
+                                />
+                            </Tooltip>
+                        )}
+                        <Tooltip label="Convidar Amigo">
+                            <IconButton
+                                aria-label="Copy Invite" icon={<BsClipboard />}
+                                size="xs" variant="ghost" color="gray.400"
+                                _hover={{ color: 'white', bg: 'gray.700' }}
+                                onClick={handleCopyInvite}
+                            />
+                        </Tooltip>
+                    </HStack>
                 </Flex>
 
                 {/* Channel List Dinâmica do Supabase */}
                 <VStack align="stretch" flex="1" overflowY="auto" px={2} py={4} spacing={1}>
                     {/* Text Channels */}
-                    <Text fontSize="xs" fontWeight="bold" color="gray.500" px={2} mb={1} textTransform="uppercase" letterSpacing="wider">
-                        Canais de Texto
-                    </Text>
+                    <Flex px={2} mb={1} align="center" justify="space-between">
+                        <Text fontSize="xs" fontWeight="bold" color="gray.500" textTransform="uppercase" letterSpacing="wider">
+                            Canais de Texto
+                        </Text>
+                        {selectedServer && (
+                            <Tooltip label="Criar Canal de Texto">
+                                <IconButton aria-label="Criar Canal" icon={<BsPlusLg />} size="xs" variant="ghost" color="gray.500" _hover={{ color: 'white', bg: 'gray.700' }} onClick={() => { setChannelTypeToCreate('text'); createChannelDisclosure.onOpen(); }} />
+                            </Tooltip>
+                        )}
+                    </Flex>
                     {textChannels.length === 0 ? (
                         <Text fontSize="xs" color="gray.600" px={2} fontStyle="italic">Nenhum canal de texto</Text>
                     ) : (
@@ -345,9 +434,16 @@ function App() {
                     <Box h={4} />
 
                     {/* Voice Channels */}
-                    <Text fontSize="xs" fontWeight="bold" color="gray.500" px={2} mb={1} textTransform="uppercase" letterSpacing="wider">
-                        Canais de Voz
-                    </Text>
+                    <Flex px={2} mb={1} align="center" justify="space-between">
+                        <Text fontSize="xs" fontWeight="bold" color="gray.500" textTransform="uppercase" letterSpacing="wider">
+                            Canais de Voz
+                        </Text>
+                        {selectedServer && (
+                            <Tooltip label="Criar Canal de Voz">
+                                <IconButton aria-label="Criar Canal" icon={<BsPlusLg />} size="xs" variant="ghost" color="gray.500" _hover={{ color: 'white', bg: 'gray.700' }} onClick={() => { setChannelTypeToCreate('voice'); createChannelDisclosure.onOpen(); }} />
+                            </Tooltip>
+                        )}
+                    </Flex>
                     {voiceChannels.length === 0 ? (
                         <Text fontSize="xs" color="gray.600" px={2} fontStyle="italic">Nenhum canal de voz</Text>
                     ) : (
@@ -382,7 +478,7 @@ function App() {
                 {/* User Footer */}
                 <Box bg="gray.900" px={2} py={2} borderTop="1px solid" borderColor="gray.700">
                     <Flex align="center" gap={2}>
-                        <Avatar size="sm" name={userName} bg="blue.600" color="white" />
+                        <Avatar size="sm" name={userName} src={userAvatar} bg="blue.600" color="white" />
                         <Box flex="1" minW={0}>
                             <Text fontSize="xs" fontWeight="bold" color="white" isTruncated>{userName}</Text>
                             <Text fontSize="10px" color={inVoice ? 'green.400' : 'gray.500'} isTruncated>
@@ -558,12 +654,36 @@ function App() {
             </Flex>
 
             {/* ═══════ Modals ═══════ */}
-            <SettingsModal isOpen={settingsDisclosure.isOpen} onClose={settingsDisclosure.onClose} />
+            <SettingsModal 
+                isOpen={settingsDisclosure.isOpen} 
+                onClose={settingsDisclosure.onClose} 
+                onProfileUpdated={() => session?.user?.id && fetchUserProfile(session.user.id)}
+            />
             <CreateServerModal
                 isOpen={createServerDisclosure.isOpen}
                 onClose={createServerDisclosure.onClose}
                 onServerCreated={fetchServers}
             />
+            <JoinServerModal
+                isOpen={joinServerDisclosure.isOpen}
+                onClose={joinServerDisclosure.onClose}
+                onServerJoined={fetchServers}
+            />
+            <EditServerModal
+                isOpen={editServerDisclosure.isOpen}
+                onClose={editServerDisclosure.onClose}
+                server={selectedServer}
+                onServerUpdated={() => { fetchServers(); }}
+            />
+            {selectedServer && (
+                <CreateChannelModal
+                    isOpen={createChannelDisclosure.isOpen}
+                    onClose={createChannelDisclosure.onClose}
+                    serverId={selectedServer.id}
+                    initialType={channelTypeToCreate}
+                    onChannelCreated={() => fetchChannels(selectedServer.id)}
+                />
+            )}
         </Flex>
     );
 }

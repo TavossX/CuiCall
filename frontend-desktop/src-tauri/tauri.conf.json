@@ -19,7 +19,8 @@
     ],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
@@ -31,5 +32,20 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "cuicall"
+        ]
+      }
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/TavossX/CuiCall/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQzRjdFNUY4NUVEMjM2RDEKUldUUk50SmUrT1gzUThhLysrQ3hRRG1vYlRaSWQ1WlJLTUxQUHB0U1E2SVdqQ0FkQy9nR3VQQk8K"
+    }
   }
 }
