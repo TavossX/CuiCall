@@ -15,9 +15,9 @@ public class CallHub : Hub
         await Clients.GroupExcept(roomId, Context.ConnectionId).SendAsync("ReceiveSignal", Context.ConnectionId, signal);
     }
 
-    public async Task SendMessage(string message, string roomId)
+    public async Task SendMessage(string userName, string message, string roomId)
     {
-        await Clients.Group(roomId).SendAsync("ReceiveMessage", Context.ConnectionId, message);
+        await Clients.Group(roomId).SendAsync("ReceiveMessage", userName, message);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)

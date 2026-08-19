@@ -250,14 +250,8 @@ function App() {
             console.error('Erro ao salvar mensagem no Supabase:', error);
         }
 
-        // 2. Dispara no SignalR para sincronização em tempo real
-        await sendMessage(textToSend, channelId);
-
-        // 3. Atualiza localmente no estado da tela
-        setChannelMessages(prev => ({
-            ...prev,
-            [channelId]: [...(prev[channelId] || []), { senderId: userName, text: textToSend }]
-        }));
+        // 2. Dispara no SignalR para sincronização em tempo real (que já devolve a msg para nós via ReceiveMessage)
+        await sendMessage(userName, textToSend, channelId);
     };
 
     const handleCopyInvite = () => {

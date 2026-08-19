@@ -245,10 +245,10 @@ export const useWebRTC = () => {
         };
     }, [joinVoice]);
 
-    const sendMessage = useCallback(async (text: string, channelId: string) => {
+    const sendMessage = useCallback(async (userName: string, text: string, channelId: string) => {
         if (!text.trim() || !channelId) return;
         const hub = await getHubConnection();
-        await hub.invoke("SendMessage", text, channelId);
+        await hub.invoke("SendMessage", userName, text, channelId);
     }, [getHubConnection]);
 
     const loadChannelMessages = useCallback((channelId: string, msgs: ChatMessage[]) => {
