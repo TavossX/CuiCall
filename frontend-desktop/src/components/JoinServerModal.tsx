@@ -25,26 +25,23 @@ export const JoinServerModal = ({ isOpen, onClose, onServerJoined }: JoinServerM
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error('Usuário não autenticado.');
 
-            // Verifica se o servidor existe
-            const { data: server, error: serverError } = await supabase
-                .from('servers')
-                .select('id')
-                .eq('id', inviteId.trim())
-                .single();
-
-            if (serverError || !server) {
-                throw new Error('Servidor não encontrado ou ID de convite inválido.');
-            }
-
             // Tenta inserir como membro
             const { error: memberError } = await supabase
                 .from('server_members')
-                .insert([{ server_id: server.id, user_id: user.id, role: 'member' }]);
+                .insert([{ server_id: inviteId.trim(), user_id: user.id, role: 'member' }]);
 
             if (memberError) {
                 // Erro comum: violação de unicidade (já é membro)
                 if (memberError.code === '23505') {
                     throw new Error('Você já é membro deste servidor.');
+                }
+                // Erro de FK: Servidor não existe
+                if (memberError.code === '23503') {
+                    throw new Error('Servidor não encontrado ou ID de convite inválido.');
+                }
+                // Se for formato UUID inválido
+                if (memberError.code === '22P02') {
+                    throw new Error('Formato de ID de convite inválido.');
                 }
                 throw memberError;
             }
