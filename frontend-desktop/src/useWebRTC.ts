@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as signalR from '@microsoft/signalr';
+import { usePushToTalk } from './usePushToTalk';
 
 const STUN_SERVERS: RTCConfiguration = {
     iceServers: [
@@ -48,6 +49,8 @@ export const useWebRTC = () => {
     const [directMessages, setDirectMessages] = useState<Record<string, ChatMessage[]>>({});
     const [voicePresence, setVoicePresence] = useState<Record<string, VoiceMemberInfo[]>>({});
 
+    const { isPttActive, pttEnabled, pttShortcut, setPttEnabled, setPttShortcut } = usePushToTalk();
+
     const connectionRef = useRef<signalR.HubConnection | null>(null);
     const peersRef = useRef(new Map<string, RTCPeerConnection>());
     const localStreamRef = useRef<MediaStream | null>(null);
@@ -56,6 +59,28 @@ export const useWebRTC = () => {
     const isScreenSharingRef = useRef(false);
     const isMutedRef = useRef(false);
     const registeredUserIdRef = useRef<string | null>(null);
+
+    // ── Sincronização da trilha de áudio do microfone com Push-to-Talk ──
+    useEffect(() => {
+        if (!inVoice || !localStreamRef.current) return;
+
+        if (pttEnabled) {
+            const shouldTransmitAudio = isPttActive;
+            localStreamRef.current.getAudioTracks().forEach(track => {
+                track.enabled = shouldTransmitAudio;
+            });
+
+            const currentMuteState = !shouldTransmitAudio;
+            setIsMuted(currentMuteState);
+            isMutedRef.current = currentMuteState;
+
+            if (voiceRoomIdRef.current && connectionRef.current?.state === signalR.HubConnectionState.Connected) {
+                connectionRef.current.invoke("UpdateVoiceMuteState", voiceRoomIdRef.current, currentMuteState).catch((err) => {
+                    console.warn("[PTT] Erro ao sincronizar estado de mute com o Hub:", err);
+                });
+            }
+        }
+    }, [inVoice, pttEnabled, isPttActive]);
 
     // Keep refs in sync
     useEffect(() => {
@@ -443,16 +468,23 @@ export const useWebRTC = () => {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         setLocalStream(stream);
         localStreamRef.current = stream;
+
+        // Se o modo Push-To-Talk estiver ativado, o áudio inicia mutado até a tecla ser pressionada
+        const initialMuteState = pttEnabled;
+        stream.getAudioTracks().forEach(track => {
+            track.enabled = !initialMuteState;
+        });
+
         setIsCamOff(false);
-        setIsMuted(false);
-        isMutedRef.current = false;
+        setIsMuted(initialMuteState);
+        isMutedRef.current = initialMuteState;
         setIsScreenSharing(false);
         setInVoice(true);
         setVoiceRoomId(roomId);
         voiceRoomIdRef.current = roomId;
 
         const hub = await getHubConnection();
-        await hub.invoke("JoinRoom", roomId, profile?.userName || "Usuário", profile?.avatarUrl || "", false);
+        await hub.invoke("JoinRoom", roomId, profile?.userName || "Usuário", profile?.avatarUrl || "", initialMuteState);
 
         peersRef.current.forEach((peer) => {
             const senders = peer.getSenders();
@@ -632,6 +664,11 @@ export const useWebRTC = () => {
         isCamOff,
         isMuted,
         isScreenSharing,
+        isPttActive,
+        pttEnabled,
+        pttShortcut,
+        setPttEnabled,
+        setPttShortcut,
         channelMessages,
         directMessages,
         voicePresence,

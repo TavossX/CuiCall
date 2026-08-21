@@ -60,8 +60,9 @@ function App() {
     // Hook global WebRTC e SignalR no nível raiz
     const {
         localStream, remoteStreams, inVoice, voiceRoomId,
-        isCamOff, isMuted, isScreenSharing, channelMessages,
-        directMessages, voicePresence,
+        isCamOff, isMuted, isScreenSharing,
+        isPttActive, pttEnabled, pttShortcut,
+        channelMessages, directMessages, voicePresence,
         setChannelMessages, loadChannelMessages, loadDirectMessages,
         joinVoice, leaveVoice, joinTextChannel,
         toggleMute, toggleCamera, shareScreen,
@@ -769,15 +770,26 @@ function App() {
                         />
                         <Box flex="1" minW={0}>
                             <Text fontSize="xs" fontWeight="bold" color="white" isTruncated>{userName}</Text>
-                            <Text fontSize="10px" color={inVoice ? 'green.400' : 'gray.500'} isTruncated>
-                                {inVoice ? 'Voz Conectada' : 'Online'}
+                            <Text fontSize="10px" color={inVoice ? (pttEnabled ? (isPttActive ? 'green.300' : 'blue.300') : 'green.400') : 'gray.500'} isTruncated fontWeight={inVoice && isPttActive ? 'bold' : 'normal'}>
+                                {inVoice
+                                    ? (pttEnabled
+                                        ? (isPttActive ? `🎙️ Transmitindo (${pttShortcut})` : `PTT Ativo [${pttShortcut}]`)
+                                        : 'Voz Conectada')
+                                    : 'Online'}
                             </Text>
                         </Box>
                         <HStack spacing={0}>
-                            <Tooltip label={isMuted ? 'Ativar Microfone' : 'Mutar Microfone'}>
-                                <IconButton aria-label="Mic" icon={isMuted ? <BsMicMuteFill /> : <BsMicFill />} size="xs" variant="ghost"
-                                    color={isMuted ? 'red.400' : 'gray.400'} _hover={{ color: isMuted ? 'red.300' : 'white', bg: 'gray.700' }}
-                                    onClick={toggleMute} isDisabled={!inVoice} />
+                            <Tooltip label={pttEnabled ? `Push-to-Talk ativado: Segure [${pttShortcut}] para falar` : (isMuted ? 'Ativar Microfone' : 'Mutar Microfone')}>
+                                <IconButton
+                                    aria-label="Mic"
+                                    icon={isMuted ? <BsMicMuteFill /> : <BsMicFill />}
+                                    size="xs"
+                                    variant="ghost"
+                                    color={pttEnabled ? (isPttActive ? 'green.400' : 'blue.300') : (isMuted ? 'red.400' : 'gray.400')}
+                                    _hover={{ color: isMuted ? 'red.300' : 'white', bg: 'gray.700' }}
+                                    onClick={toggleMute}
+                                    isDisabled={!inVoice}
+                                />
                             </Tooltip>
                             <Tooltip label={isCamOff ? 'Ligar Câmera' : 'Desligar Câmera'}>
                                 <IconButton aria-label="Cam" icon={isCamOff ? <BsCameraVideoOffFill /> : <BsCameraVideoFill />} size="xs" variant="ghost"

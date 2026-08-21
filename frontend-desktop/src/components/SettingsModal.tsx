@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import {
     Modal, ModalOverlay, ModalContent, ModalHeader, ModalBody, ModalCloseButton,
-    Button, VStack, Text, Select, FormControl, FormLabel, Tabs, TabList, TabPanels, Tab, TabPanel, Input, useToast, Avatar, Flex, Progress, Badge, Box
+    Button, VStack, Text, Select, FormControl, FormLabel, Tabs, TabList, TabPanels, Tab, TabPanel,
+    Input, useToast, Avatar, Flex, Progress, Badge, Box, Switch, Divider
 } from '@chakra-ui/react';
 import { supabase } from '../supabaseClient';
 import { useAutoUpdater } from '../useAutoUpdater';
@@ -26,6 +27,8 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
     const [selectedAudioInput, setSelectedAudioInput] = useState(localStorage.getItem('cuicall-audio-input') || '');
     const [selectedAudioOutput, setSelectedAudioOutput] = useState(localStorage.getItem('cuicall-audio-output') || '');
     const [selectedVideoInput, setSelectedVideoInput] = useState(localStorage.getItem('cuicall-video-input') || '');
+    const [pttEnabled, setPttEnabled] = useState(localStorage.getItem('cuicall-ptt-enabled') === 'true');
+    const [pttShortcut, setPttShortcut] = useState(localStorage.getItem('cuicall-ptt-shortcut') || 'F8');
 
     // Aba Perfil
     const [userId, setUserId] = useState<string | null>(null);
@@ -79,8 +82,18 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
         localStorage.setItem('cuicall-audio-input', selectedAudioInput);
         localStorage.setItem('cuicall-audio-output', selectedAudioOutput);
         localStorage.setItem('cuicall-video-input', selectedVideoInput);
+        localStorage.setItem('cuicall-ptt-enabled', pttEnabled ? 'true' : 'false');
+        localStorage.setItem('cuicall-ptt-shortcut', pttShortcut);
+
+        // Dispara evento para hooks ativos
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('cuicall:pttConfigChanged', {
+                detail: { pttEnabled, pttShortcut }
+            }));
+        }
+
         toast({
-            title: 'Dispositivos salvos',
+            title: 'Configurações de áudio salvas',
             status: 'success',
             duration: 2000,
             isClosable: true,
@@ -265,11 +278,52 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                                         </Select>
                                     </FormControl>
 
+                                    <Divider borderColor="gray.700" my={1} />
+
+                                    {/* Configuração de Push-to-Talk (PTT) */}
+                                    <Box p={3} borderRadius="md" bg="gray.900" border="1px solid" borderColor="gray.700" w="full">
+                                        <Flex justify="space-between" align="center" mb={2}>
+                                            <Box>
+                                                <Text fontSize="sm" fontWeight="bold" color="white">Modo Push-to-Talk (Aperte para Falar)</Text>
+                                                <Text fontSize="xs" color="gray.400">
+                                                    O microfone só é transmitido enquanto a tecla de atalho estiver pressionada.
+                                                </Text>
+                                            </Box>
+                                            <Switch
+                                                colorScheme="blue"
+                                                isChecked={pttEnabled}
+                                                onChange={(e) => setPttEnabled(e.target.checked)}
+                                            />
+                                        </Flex>
+
+                                        {pttEnabled && (
+                                            <FormControl mt={3}>
+                                                <FormLabel fontSize="xs" color="gray.400">Tecla de Atalho (Global / Sistema)</FormLabel>
+                                                <Select
+                                                    bg="gray.800"
+                                                    borderColor="gray.600"
+                                                    size="sm"
+                                                    value={pttShortcut}
+                                                    onChange={(e) => setPttShortcut(e.target.value)}
+                                                >
+                                                    <option value="F8" style={{ background: '#1a202c' }}>F8 (Recomendado)</option>
+                                                    <option value="F9" style={{ background: '#1a202c' }}>F9</option>
+                                                    <option value="F10" style={{ background: '#1a202c' }}>F10</option>
+                                                    <option value="Alt" style={{ background: '#1a202c' }}>Alt</option>
+                                                    <option value="Control" style={{ background: '#1a202c' }}>Control / Ctrl</option>
+                                                    <option value="Shift" style={{ background: '#1a202c' }}>Shift</option>
+                                                    <option value="Space" style={{ background: '#1a202c' }}>Barra de Espaço</option>
+                                                    <option value="Mouse4" style={{ background: '#1a202c' }}>Mouse 4 (Lateral)</option>
+                                                </Select>
+                                            </FormControl>
+                                        )}
+                                    </Box>
+
                                     <Text fontSize="xs" color="gray.500">
-                                        As configurações serão aplicadas na próxima vez que você entrar em um canal de voz.
+                                        As configurações de áudio, vídeo e Push-to-Talk são salvas e sincronizadas automaticamente.
                                     </Text>
                                     <Button colorScheme="blue" w="full" onClick={handleSaveDevices}>
-                                        Salvar Dispositivos
+                                        Salvar Configurações de Áudio
                                     </Button>
                                 </VStack>
                             </TabPanel>
