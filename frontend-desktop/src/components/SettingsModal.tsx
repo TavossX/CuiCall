@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import {
     Modal, ModalOverlay, ModalContent, ModalHeader, ModalBody, ModalCloseButton,
-    Button, VStack, Text, Select, FormControl, FormLabel, Tabs, TabList, TabPanels, Tab, TabPanel, Input, useToast, Avatar, Flex
+    Button, VStack, Text, Select, FormControl, FormLabel, Tabs, TabList, TabPanels, Tab, TabPanel, Input, useToast, Avatar, Flex, Progress, Badge, Box
 } from '@chakra-ui/react';
 import { supabase } from '../supabaseClient';
+import { useAutoUpdater } from '../useAutoUpdater';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -29,6 +30,7 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
     const [avatarUrl, setAvatarUrl] = useState('');
     const [avatarFile, setAvatarFile] = useState<File | null>(null);
     const [isSavingProfile, setIsSavingProfile] = useState(false);
+    const { checkForUpdates, isUpdating, progress } = useAutoUpdater(false);
     
     const toast = useToast();
 
@@ -136,6 +138,7 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                         <TabList mb="1em" borderBottomColor="gray.700">
                             <Tab _selected={{ color: 'white', bg: 'gray.700', borderColor: 'gray.700' }} color="gray.400">Perfil</Tab>
                             <Tab _selected={{ color: 'white', bg: 'gray.700', borderColor: 'gray.700' }} color="gray.400">Áudio e Vídeo</Tab>
+                            <Tab _selected={{ color: 'white', bg: 'gray.700', borderColor: 'gray.700' }} color="gray.400">Atualizações</Tab>
                         </TabList>
                         
                         <TabPanels>
@@ -233,6 +236,40 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                                     </Text>
                                     <Button colorScheme="blue" w="full" onClick={handleSaveDevices}>
                                         Salvar Dispositivos
+                                    </Button>
+                                </VStack>
+                            </TabPanel>
+
+                            <TabPanel px={0}>
+                                <VStack spacing={5} align="stretch">
+                                    <Box p={4} borderRadius="lg" bg="gray.900" border="1px solid" borderColor="gray.700">
+                                        <Flex justify="space-between" align="center" mb={2}>
+                                            <Text fontSize="sm" fontWeight="bold" color="white">CuiCall Desktop</Text>
+                                            <Badge colorScheme="blue" borderRadius="full" px={2}>v0.1.0</Badge>
+                                        </Flex>
+                                        <Text fontSize="xs" color="gray.400">
+                                            O CuiCall verifica e instala atualizações automaticamente sempre que uma nova versão é lançada.
+                                        </Text>
+                                    </Box>
+
+                                    {isUpdating && progress && (
+                                        <Box>
+                                            <Flex justify="space-between" fontSize="xs" color="gray.400" mb={1}>
+                                                <Text>Baixando atualização...</Text>
+                                                <Text>{progress.percentage}%</Text>
+                                            </Flex>
+                                            <Progress value={progress.percentage} size="xs" colorScheme="blue" borderRadius="full" />
+                                        </Box>
+                                    )}
+
+                                    <Button
+                                        colorScheme="purple"
+                                        w="full"
+                                        onClick={checkForUpdates}
+                                        isLoading={isUpdating}
+                                        loadingText="Baixando e instalando..."
+                                    >
+                                        Verificar Atualizações Agora
                                     </Button>
                                 </VStack>
                             </TabPanel>

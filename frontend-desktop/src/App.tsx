@@ -6,6 +6,7 @@ import { Virtuoso } from 'react-virtuoso';
 import logo from './assets/CuiCall.png';
 import { useWebRTC } from './useWebRTC';
 import { useNotifications } from './useNotifications';
+import { useAutoUpdater } from './useAutoUpdater';
 import { supabase } from './supabaseClient';
 import { Auth } from './components/Auth';
 import { SettingsModal } from './components/SettingsModal';
@@ -66,6 +67,9 @@ function App() {
 
     // Hook unificado de notificações (áudio + OS Tauri)
     const { playSound, notifyNewDM, notifyVoiceState, notifyOS } = useNotifications();
+
+    // Hook do Auto-Updater (executa verificação silenciosa ao abrir o app)
+    useAutoUpdater();
 
     const userEmail = session?.user?.email ?? 'Usuário';
     const userName = userProfile?.display_name || userEmail.split('@')[0];
