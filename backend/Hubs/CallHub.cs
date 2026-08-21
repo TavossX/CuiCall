@@ -69,6 +69,21 @@ public class CallHub : Hub
         }
     }
 
+    public async Task SendMessage(string messageId, string userName, string message, string roomId, string? attachmentUrl = null)
+    {
+        await Clients.Group(roomId).SendAsync("ReceiveMessage", messageId, userName, message, roomId, attachmentUrl);
+    }
+
+    public async Task AddReaction(string messageId, string emoji, string userName, string roomId)
+    {
+        await Clients.Group(roomId).SendAsync("ReceiveReactionAdded", messageId, emoji, userName);
+    }
+
+    public async Task RemoveReaction(string messageId, string emoji, string userName, string roomId)
+    {
+        await Clients.Group(roomId).SendAsync("ReceiveReactionRemoved", messageId, emoji, userName);
+    }
+
     /// <summary>
     /// Notifies the requester in real-time that their friend request was accepted.
     /// </summary>
