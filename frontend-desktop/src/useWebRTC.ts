@@ -86,6 +86,7 @@ export const useWebRTC = () => {
 
         peer.onicecandidate = (event) => {
             if (event.candidate) {
+                console.log(`[WebRTC 🧊] ICE Candidate local gerado para ${remotePeerId}:`, event.candidate.candidate.slice(0, 40));
                 connectionRef.current?.invoke(
                     "SendSignalToUser",
                     JSON.stringify({ candidate: event.candidate }),
@@ -95,15 +96,21 @@ export const useWebRTC = () => {
         };
 
         peer.ontrack = (event) => {
+            console.log(`[WebRTC 🎥] Track de mídia remota recebida de ${remotePeerId}:`, event.track.kind);
             if (event.streams && event.streams[0]) {
                 addRemoteStream(remotePeerId, event.streams[0]);
             }
         };
 
         peer.onconnectionstatechange = () => {
+            console.log(`[WebRTC 🔗] Estado da conexão P2P com ${remotePeerId}: ${peer.connectionState}`);
             if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
-                console.warn(`[WebRTC] Connection to ${remotePeerId} ${peer.connectionState}`);
+                console.warn(`[WebRTC ⚠️] Conexão P2P com ${remotePeerId} falhou ou desconectou.`);
             }
+        };
+
+        peer.oniceconnectionstatechange = () => {
+            console.log(`[WebRTC 🧊] ICE Connection State com ${remotePeerId}: ${peer.iceConnectionState}`);
         };
 
         const stream = localStreamRef.current;
@@ -122,18 +129,52 @@ export const useWebRTC = () => {
 
         if (!connectionRef.current) {
             const signalRUrl = import.meta.env.VITE_SIGNALR_URL || "http://localhost:5222/callHub";
+            console.log(`[SignalR 🚀] Inicializando conexão com: ${signalRUrl}`);
+
             const hub = new signalR.HubConnectionBuilder()
                 .withUrl(signalRUrl)
-                .withAutomaticReconnect()
+                .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
+                .configureLogging(signalR.LogLevel.Information)
                 .build();
+
+            // ── Ciclo de Vida da Conexão ──
+            hub.onreconnecting((error) => {
+                console.warn('[SignalR 🔄] Conexão perdida. Tentando reconectar automaticamente...', error);
+            });
+
+            hub.onreconnected(async (connectionId) => {
+                console.log(`[SignalR ✅] Conexão restabelecida! ConnectionId: ${connectionId}`);
+                if (registeredUserIdRef.current) {
+                    try {
+                        await hub.invoke("RegisterUser", registeredUserIdRef.current);
+                        console.log(`[SignalR ✅] Usuário re-registrado: ${registeredUserIdRef.current}`);
+                    } catch (err) {
+                        console.error('[SignalR ❌] Falha ao re-registrar usuário após reconexão:', err);
+                    }
+                }
+                if (voiceRoomIdRef.current) {
+                    try {
+                        await hub.invoke("JoinRoom", voiceRoomIdRef.current);
+                        console.log(`[SignalR ✅] Reingressou na sala de voz: ${voiceRoomIdRef.current}`);
+                    } catch (err) {
+                        console.error('[SignalR ❌] Falha ao reingressar na sala de voz:', err);
+                    }
+                }
+            });
+
+            hub.onclose((error) => {
+                console.error('[SignalR ❌] Conexão com o servidor foi encerrada permanentemente:', error);
+            });
 
             // ── P2P Mesh Signaling ──
 
-            hub.on("UserJoined", async (connectionId: string, _roomId: string) => {
+            hub.on("UserJoined", async (connectionId: string, roomId: string) => {
                 const currentVoiceRoom = voiceRoomIdRef.current;
+                console.log(`[WebRTC 👤] Peer entrou na sala (${roomId}): ${connectionId}`);
                 if (!currentVoiceRoom) return;
 
                 try {
+                    console.log(`[WebRTC 📞] Criando RTCPeerConnection e Offer para peer: ${connectionId}`);
                     const peer = createPeerForUser(connectionId);
                     const offer = await peer.createOffer();
                     await peer.setLocalDescription(offer);
@@ -142,13 +183,14 @@ export const useWebRTC = () => {
                         JSON.stringify({ type: 'offer', sdp: offer }),
                         connectionId
                     );
+                    console.log(`[WebRTC 📤] Offer enviado com sucesso para: ${connectionId}`);
                 } catch (err) {
-                    console.error(`[WebRTC] Error creating offer for ${connectionId}:`, err);
+                    console.error(`[WebRTC ❌] Erro ao criar/enviar offer para ${connectionId}:`, err);
                 }
             });
 
             hub.on("ExistingMembers", (_memberIds: string[], _roomId: string) => {
-                console.log(`[WebRTC] Existing members in room:`, _memberIds);
+                console.log(`[WebRTC 👥] Membros existentes na sala (${_roomId}):`, _memberIds);
             });
 
             hub.on("ReceiveSignal", async (senderId: string, signal: string) => {
@@ -159,6 +201,7 @@ export const useWebRTC = () => {
                     const data = JSON.parse(signal);
 
                     if (data.type === 'offer') {
+                        console.log(`[WebRTC 📥] Recebido Offer de ${senderId}. Criando Answer...`);
                         const peer = createPeerForUser(senderId);
                         await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
                         const answer = await peer.createAnswer();
@@ -168,7 +211,9 @@ export const useWebRTC = () => {
                             JSON.stringify({ type: 'answer', sdp: answer }),
                             senderId
                         );
+                        console.log(`[WebRTC 📤] Answer enviado com sucesso para ${senderId}`);
                     } else if (data.type === 'answer') {
+                        console.log(`[WebRTC 📥] Recebido Answer de ${senderId}. Setando remoteDescription...`);
                         const peer = peersRef.current.get(senderId);
                         if (peer) {
                             await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
@@ -180,11 +225,12 @@ export const useWebRTC = () => {
                         }
                     }
                 } catch (err) {
-                    console.error(`[WebRTC] Error handling signal from ${senderId}:`, err);
+                    console.error(`[WebRTC ❌] Erro ao processar sinal recebido de ${senderId}:`, err);
                 }
             });
 
-            hub.on("UserLeft", (connectionId: string, _roomId: string) => {
+            hub.on("UserLeft", (connectionId: string, roomId: string) => {
+                console.log(`[WebRTC 🚪] Peer saiu da sala (${roomId}): ${connectionId}`);
                 const peer = peersRef.current.get(connectionId);
                 if (peer) {
                     peer.close();
@@ -195,6 +241,7 @@ export const useWebRTC = () => {
 
             // ── Voice Presence ──
             hub.on("VoiceStateUpdated", (roomId: string, connectionId: string, action: string) => {
+                console.log(`[VoicePresence 🎙️] Sala ${roomId} | Peer ${connectionId} -> ${action}`);
                 setVoicePresence(prev => {
                     const current = prev[roomId] || [];
                     if (action === 'joined') {
@@ -221,6 +268,7 @@ export const useWebRTC = () => {
             // ── Chat de Servidor ──
             hub.on("ReceiveMessage", (senderId: string, text: string) => {
                 const targetChannel = currentChannelIdRef.current || voiceRoomIdRef.current || 'cuicall-geral';
+                console.log(`[Chat 💬] Canal ${targetChannel} | De: ${senderId} | Texto: ${text.slice(0, 30)}...`);
                 setChannelMessages(prev => ({
                     ...prev,
                     [targetChannel]: [...(prev[targetChannel] || []), { senderId, text }]
@@ -229,6 +277,7 @@ export const useWebRTC = () => {
 
             // ── Direct Messages (DMs) ──
             hub.on("ReceiveDirectMessage", (senderUserId: string, text: string, dmData: any) => {
+                console.log(`[DM 📩] De: ${senderUserId} | Texto: ${text.slice(0, 30)}...`);
                 setDirectMessages(prev => ({
                     ...prev,
                     [senderUserId]: [...(prev[senderUserId] || []), {
@@ -249,6 +298,7 @@ export const useWebRTC = () => {
 
             // ── Solicitações de Amizade em Tempo Real ──
             hub.on("FriendRequestReceived", (requesterUserId: string, requestData: any) => {
+                console.log(`[Amigos 🤝] Pedido de amizade recebido de: ${requesterUserId}`);
                 if (typeof window !== 'undefined') {
                     window.dispatchEvent(new CustomEvent('cuicall:friendRequestReceived', {
                         detail: { requesterUserId, requestData }
@@ -257,6 +307,7 @@ export const useWebRTC = () => {
             });
 
             hub.on("FriendRequestAccepted", (accepterUserId: string, acceptData: any) => {
+                console.log(`[Amigos 🎉] Pedido de amizade aceito por: ${accepterUserId}`);
                 if (typeof window !== 'undefined') {
                     window.dispatchEvent(new CustomEvent('cuicall:friendRequestAccepted', {
                         detail: { accepterUserId, acceptData }
@@ -268,14 +319,22 @@ export const useWebRTC = () => {
         }
 
         if (connectionRef.current.state === signalR.HubConnectionState.Disconnected) {
-            await connectionRef.current.start();
+            try {
+                console.log('[SignalR ⏳] Conectando ao hub...');
+                await connectionRef.current.start();
+                console.log('[SignalR 🟢] Conectado com sucesso! ID:', connectionRef.current.connectionId);
+            } catch (err) {
+                console.error('[SignalR 🔴] Falha ao conectar ao servidor SignalR (possível Cold Start no backend):', err);
+                throw err;
+            }
 
             // Re-registra o usuário se já autenticado
             if (registeredUserIdRef.current) {
                 try {
                     await connectionRef.current.invoke("RegisterUser", registeredUserIdRef.current);
+                    console.log(`[SignalR 👤] Usuário registrado no Hub: ${registeredUserIdRef.current}`);
                 } catch (err) {
-                    console.warn("[SignalR] Erro ao re-registrar usuário:", err);
+                    console.warn("[SignalR ⚠️] Erro ao registrar usuário:", err);
                 }
             }
 
