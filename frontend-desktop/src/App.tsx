@@ -1,7 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { Box, Button, Input, VStack, HStack, Heading, Text, Flex, Image, Spinner, Tooltip, IconButton, Avatar, useDisclosure, useToast } from '@chakra-ui/react';
+import { useState, useEffect, useCallback } from 'react';
+import {
+    Box, Button, Input, VStack, HStack, Heading, Text, Flex, Image, Spinner, Tooltip, IconButton, Avatar, useDisclosure, useToast
+} from '@chakra-ui/react';
+import { Virtuoso } from 'react-virtuoso';
 import logo from './assets/CuiCall.png';
 import { useWebRTC } from './useWebRTC';
+import { useNotifications } from './useNotifications';
 import { supabase } from './supabaseClient';
 import { Auth } from './components/Auth';
 import { SettingsModal } from './components/SettingsModal';
@@ -9,8 +13,15 @@ import { CreateServerModal } from './components/CreateServerModal';
 import { CreateChannelModal } from './components/CreateChannelModal';
 import { EditServerModal } from './components/EditServerModal';
 import { JoinServerModal } from './components/JoinServerModal';
+import { VideoGrid } from './components/VideoGrid';
+import { ChatMessageItem } from './components/ChatMessage';
+import { FriendsView, FriendProfile } from './components/FriendsView';
+import { DMPanel } from './components/DMPanel';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
-import { BsMicFill, BsMicMuteFill, BsCameraVideoFill, BsCameraVideoOffFill, BsTelephoneXFill, BsBoxArrowRight, BsShareFill, BsGearFill, BsClipboard, BsPlusLg, BsCompass } from 'react-icons/bs';
+import {
+    BsMicFill, BsMicMuteFill, BsCameraVideoFill, BsCameraVideoOffFill, BsTelephoneXFill,
+    BsBoxArrowRight, BsShareFill, BsGearFill, BsClipboard, BsPlusLg, BsPeopleFill, BsCompass
+} from 'react-icons/bs';
 
 export interface Channel {
     id: string;
@@ -22,12 +33,17 @@ export interface Channel {
 
 function App() {
     const [isLoading, setIsLoading] = useState(true);
+    const [loadingMessage, setLoadingMessage] = useState('Verificando sessão...');
     const [session, setSession] = useState<any>(null);
     const [servers, setServers] = useState<any[]>([]);
     const [selectedServer, setSelectedServer] = useState<any | null>(null);
     const [channels, setChannels] = useState<Channel[]>([]);
     const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
     const [chatInput, setChatInput] = useState('');
+    const [activeFriend, setActiveFriend] = useState<FriendProfile | null>(null);
+    const [sidebarFriends, setSidebarFriends] = useState<FriendProfile[]>([]);
+    const [channelTypeToCreate, setChannelTypeToCreate] = useState<'text' | 'voice'>('text');
+    const [userProfile, setUserProfile] = useState<{ display_name?: string; avatar_url?: string } | null>(null);
 
     const settingsDisclosure = useDisclosure();
     const createServerDisclosure = useDisclosure();
@@ -36,29 +52,27 @@ function App() {
     const joinServerDisclosure = useDisclosure();
     const toast = useToast();
 
-    const [channelTypeToCreate, setChannelTypeToCreate] = useState<'text' | 'voice'>('text');
-    const [userProfile, setUserProfile] = useState<{ display_name?: string; avatar_url?: string } | null>(null);
-
-    // Hook global no nível raiz do App
+    // Hook global WebRTC e SignalR no nível raiz
     const {
-        localStream, remoteStream, inVoice, voiceRoomId,
-        isCamOff, isMuted, channelMessages,
-        loadChannelMessages,
+        localStream, remoteStreams, inVoice, voiceRoomId,
+        isCamOff, isMuted, isScreenSharing, channelMessages,
+        directMessages, voicePresence,
+        setChannelMessages, loadChannelMessages, loadDirectMessages,
         joinVoice, leaveVoice, joinTextChannel,
         toggleMute, toggleCamera, shareScreen,
-        sendMessage, stopAllMedia,
+        sendMessage, sendDirectMessage, sendFriendRequest, acceptFriendRequest,
+        registerUser, stopAllMedia,
     } = useWebRTC();
 
-    const localVideoRef = useRef<HTMLVideoElement>(null);
-    const remoteVideoRef = useRef<HTMLVideoElement>(null);
-    const messagesEndRef = useRef<HTMLDivElement>(null);
+    // Hook unificado de notificações (áudio + OS Tauri)
+    const { playSound, notifyNewDM, notifyVoiceState, notifyOS } = useNotifications();
 
     const userEmail = session?.user?.email ?? 'Usuário';
     const userName = userProfile?.display_name || userEmail.split('@')[0];
     const userAvatar = userProfile?.avatar_url || '';
 
     // ═══════ Auth & Servers ═══════
-    const fetchServers = async () => {
+    const fetchServers = async (): Promise<any[]> => {
         const { data, error } = await supabase
             .from('servers')
             .select('*')
@@ -66,12 +80,9 @@ function App() {
 
         if (!error && data) {
             setServers(data);
-            setSelectedServer((prev: any) => {
-                if (!prev && data.length > 0) return data[0];
-                const stillExists = data.find((s: any) => s.id === prev?.id);
-                return stillExists || data[0] || null;
-            });
+            return data;
         }
+        return [];
     };
 
     const fetchUserProfile = async (userId: string) => {
@@ -79,25 +90,119 @@ function App() {
         if (data) setUserProfile(data);
     };
 
+    // Busca lista de amigos para a sidebar de DMs
+    const fetchSidebarFriends = useCallback(async () => {
+        if (!session?.user?.id) return;
+        try {
+            const { data: friendships } = await supabase
+                .from('friendships')
+                .select('*')
+                .eq('status', 'accepted')
+                .or(`requester_id.eq.${session.user.id},addressee_id.eq.${session.user.id}`);
+
+            if (friendships && friendships.length > 0) {
+                const partnerIds = friendships.map(f =>
+                    f.requester_id === session.user.id ? f.addressee_id : f.requester_id
+                );
+                const { data: profiles } = await supabase
+                    .from('profiles')
+                    .select('id, email, username, avatar_url')
+                    .in('id', partnerIds);
+
+                if (profiles) {
+                    setSidebarFriends(profiles);
+                }
+            } else {
+                setSidebarFriends([]);
+            }
+        } catch (err) {
+            console.error('Erro ao carregar amigos da sidebar:', err);
+        }
+    }, [session?.user?.id]);
+
+    // ═══════ Carregamento Inicial Completo ═══════
+    const loadInitialData = useCallback(async (userSession: any) => {
+        try {
+            setLoadingMessage('Carregando servidores...');
+            await fetchServers();
+            await fetchSidebarFriends();
+            if (userSession?.user?.id) {
+                await fetchUserProfile(userSession.user.id);
+            }
+        } catch (err) {
+            console.error('Erro ao carregar dados iniciais:', err);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [fetchSidebarFriends]);
+
     useEffect(() => {
         supabase.auth.getSession().then(({ data: { session } }) => {
             setSession(session);
-            setIsLoading(false);
             if (session) {
-                fetchServers();
-                fetchUserProfile(session.user.id);
+                loadInitialData(session);
+            } else {
+                setIsLoading(false);
             }
         });
         const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
             setSession(session);
             if (session) {
-                fetchServers();
-                fetchUserProfile(session.user.id);
+                setIsLoading(true);
+                loadInitialData(session);
             }
         });
         return () => subscription.unsubscribe();
-    }, []);
+    }, [loadInitialData]);
 
+    // Registra o UserId no Hub SignalR assim que a sessão estiver pronta
+    useEffect(() => {
+        if (session?.user?.id) {
+            registerUser(session.user.id);
+        }
+    }, [session?.user?.id, registerUser]);
+
+    // Listeners de Notificações de Áudio e Sistema Operacional
+    useEffect(() => {
+        const handleNewDM = (e: any) => {
+            const { senderUserId, text, dmData } = e.detail;
+            const senderName = dmData?.senderName || 'Amigo';
+            const isChatActive = selectedServer === null && activeFriend?.id === senderUserId;
+            notifyNewDM(senderName, text, isChatActive);
+            fetchSidebarFriends();
+        };
+
+        const handleVoiceState = (e: any) => {
+            const { action, connectionId } = e.detail;
+            notifyVoiceState(action, connectionId);
+        };
+
+        const handleFriendReq = () => {
+            playSound('message');
+            notifyOS('Novo Pedido de Amizade', 'Você recebeu uma solicitação de amizade no CuiCall!');
+            fetchSidebarFriends();
+        };
+
+        const handleFriendAcc = () => {
+            playSound('message');
+            notifyOS('Pedido de Amizade Aceito', 'Seu pedido de amizade foi aceito!');
+            fetchSidebarFriends();
+        };
+
+        window.addEventListener('cuicall:newDirectMessage', handleNewDM);
+        window.addEventListener('cuicall:voiceState', handleVoiceState);
+        window.addEventListener('cuicall:friendRequestReceived', handleFriendReq);
+        window.addEventListener('cuicall:friendRequestAccepted', handleFriendAcc);
+
+        return () => {
+            window.removeEventListener('cuicall:newDirectMessage', handleNewDM);
+            window.removeEventListener('cuicall:voiceState', handleVoiceState);
+            window.removeEventListener('cuicall:friendRequestReceived', handleFriendReq);
+            window.removeEventListener('cuicall:friendRequestAccepted', handleFriendAcc);
+        };
+    }, [activeFriend, selectedServer, notifyNewDM, notifyVoiceState, playSound, notifyOS, fetchSidebarFriends]);
+
+    // Deep-link para convites
     useEffect(() => {
         let unlisten: () => void;
         async function setupDeepLink() {
@@ -129,7 +234,7 @@ function App() {
         return () => {
             if (unlisten) unlisten();
         };
-    }, []);
+    }, [toast]);
 
     // ═══════ Canais Dinâmicos por Servidor ═══════
     const fetchChannels = useCallback(async (serverId: string) => {
@@ -141,7 +246,6 @@ function App() {
 
         if (!error && data) {
             if (data.length === 0) {
-                // Servidor sem canais: cria os canais padrão automaticamente
                 const { data: newChannels } = await supabase
                     .from('channels')
                     .insert([
@@ -160,12 +264,14 @@ function App() {
     useEffect(() => {
         if (selectedServer) {
             fetchChannels(selectedServer.id);
-            setActiveChannel(null); // Reseta canal ativo ao trocar de servidor
+            setActiveChannel(null);
+            setActiveFriend(null);
         } else {
             setChannels([]);
             setActiveChannel(null);
+            fetchSidebarFriends();
         }
-    }, [selectedServer, fetchChannels]);
+    }, [selectedServer, fetchChannels, fetchSidebarFriends]);
 
     // ═══════ Histórico de Mensagens do Supabase ═══════
     const fetchMessages = useCallback(async (channelId: string) => {
@@ -178,31 +284,16 @@ function App() {
         if (!error && data) {
             const formatted = data.map((m: any) => ({
                 senderId: m.user_id === session?.user?.id ? userName : m.user_id.slice(0, 8),
-                text: m.content
+                text: m.content,
+                id: m.id,
+                created_at: m.created_at,
             }));
             loadChannelMessages(channelId, formatted);
         }
     }, [session?.user?.id, userName, loadChannelMessages]);
 
-    // ═══════ Video refs ═══════
-    useEffect(() => {
-        if (localVideoRef.current && localStream && !isCamOff) {
-            localVideoRef.current.srcObject = localStream;
-        }
-    }, [localStream, isCamOff, activeChannel]);
-
-    useEffect(() => {
-        if (remoteVideoRef.current && remoteStream) {
-            remoteVideoRef.current.srcObject = remoteStream;
-        }
-    }, [remoteStream, activeChannel]);
-
     // Mensagens do canal ativo
     const currentMessages = activeChannel ? (channelMessages[activeChannel.id] || []) : [];
-
-    useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [currentMessages]);
 
     // ═══════ Handlers ═══════
     const handleChannelClick = async (channel: Channel) => {
@@ -217,12 +308,11 @@ function App() {
         } else {
             await joinTextChannel(channel.id);
             await fetchMessages(channel.id);
-            // Chamada de voz continua rodando em background!
         }
     };
 
-    const handleLeaveVoice = () => {
-        leaveVoice();
+    const handleLeaveVoice = async () => {
+        await leaveVoice();
         if (activeChannel?.type === 'voice') {
             setActiveChannel(null);
         }
@@ -233,6 +323,7 @@ function App() {
         await supabase.auth.signOut();
         setActiveChannel(null);
         setSelectedServer(null);
+        setActiveFriend(null);
     };
 
     const handleSendMessage = async () => {
@@ -241,7 +332,6 @@ function App() {
         const channelId = activeChannel.id;
         setChatInput('');
 
-        // 1. Persiste no banco de dados (Supabase)
         const { error } = await supabase.from('messages').insert([
             { channel_id: channelId, user_id: session.user.id, content: textToSend }
         ]);
@@ -250,14 +340,17 @@ function App() {
             console.error('Erro ao salvar mensagem no Supabase:', error);
         }
 
-        // 2. Dispara no SignalR para sincronização em tempo real (que já devolve a msg para nós via ReceiveMessage)
         await sendMessage(userName, textToSend, channelId);
+
+        setChannelMessages(prev => ({
+            ...prev,
+            [channelId]: [...(prev[channelId] || []), { senderId: userName, text: textToSend }]
+        }));
     };
 
     const handleCopyInvite = () => {
         if (!selectedServer) return;
         const inviteUrl = `https://cui-call.vercel.app/#/invite/${selectedServer.id}`;
-        
         navigator.clipboard.writeText(inviteUrl);
         toast({
             title: 'Link copiado!',
@@ -272,8 +365,12 @@ function App() {
     // ═══════ Loading / Auth gates ═══════
     if (isLoading) {
         return (
-            <Flex minH="100vh" align="center" justify="center" bg="gray.900">
+            <Flex minH="100vh" align="center" justify="center" bg="gray.900" flexDir="column" gap={6}>
+                <Image src={logo} alt="CuiCall" boxSize="80px" objectFit="contain" />
                 <Spinner size="xl" color="blue.400" thickness="4px" />
+                <Text color="gray.400" fontSize="sm" fontWeight="medium">
+                    {loadingMessage}
+                </Text>
             </Flex>
         );
     }
@@ -286,7 +383,7 @@ function App() {
 
     return (
         <Flex h="100vh" overflow="hidden">
-            {/* ═══════ Column 1: Server Bar (72px) ═══════ */}
+            {/* ═══════ Column 1: Server & DMs Bar (72px) ═══════ */}
             <Flex
                 w="72px" minW="72px"
                 flexDir="column" align="center"
@@ -295,15 +392,18 @@ function App() {
                 sx={{ bg: '#1a1a2e' }}
                 overflowY="auto"
             >
-                {/* Home / Default Icon */}
-                <Tooltip label="CuiCall Home" placement="right">
+                {/* Botão Início / Amigos / DMs */}
+                <Tooltip label="Início / Amigos & DMs" placement="right">
                     <Box
                         w="48px" h="48px" borderRadius={!selectedServer ? 'xl' : 'full'} overflow="hidden"
                         cursor="pointer" bg={!selectedServer ? 'blue.600' : 'gray.800'}
                         display="flex" alignItems="center" justifyContent="center"
                         _hover={{ borderRadius: 'xl', bg: 'blue.500' }}
                         transition="all 0.2s"
-                        onClick={() => setSelectedServer(null)}
+                        onClick={() => {
+                            setSelectedServer(null);
+                            setActiveFriend(null);
+                        }}
                     >
                         <Image src={logo} alt="CuiCall" boxSize="36px" objectFit="contain" />
                     </Box>
@@ -369,102 +469,168 @@ function App() {
                 </Tooltip>
             </Flex>
 
-            {/* ═══════ Column 2: Channel Sidebar (240px) ═══════ */}
+            {/* ═══════ Column 2: Channel or DM Sidebar (240px) ═══════ */}
             <Flex w="240px" minW="240px" bg="gray.800" flexDir="column" borderRight="1px solid" borderColor="gray.700">
-                {/* Server Header */}
+                {/* Cabeçalho da Coluna 2 */}
                 <Flex h="48px" px={4} align="center" justify="space-between" borderBottom="1px solid" borderColor="gray.700">
                     <Heading size="sm" color="white" fontWeight="bold" isTruncated maxW="170px">
-                        {selectedServer?.name || 'CuiCall Home'}
+                        {selectedServer ? selectedServer.name : 'Mensagens Diretas'}
                     </Heading>
                     <HStack>
                         {selectedServer && (
-                            <Tooltip label="Configurações do Servidor">
-                                <IconButton
-                                    aria-label="Edit Server" icon={<BsGearFill />}
-                                    size="xs" variant="ghost" color="gray.400"
-                                    _hover={{ color: 'white', bg: 'gray.700' }}
-                                    onClick={editServerDisclosure.onOpen}
-                                />
-                            </Tooltip>
+                            <>
+                                <Tooltip label="Configurações do Servidor">
+                                    <IconButton
+                                        aria-label="Edit Server" icon={<BsGearFill />}
+                                        size="xs" variant="ghost" color="gray.400"
+                                        _hover={{ color: 'white', bg: 'gray.700' }}
+                                        onClick={editServerDisclosure.onOpen}
+                                    />
+                                </Tooltip>
+                                <Tooltip label="Convidar Amigo">
+                                    <IconButton
+                                        aria-label="Copy Invite" icon={<BsClipboard />}
+                                        size="xs" variant="ghost" color="gray.400"
+                                        _hover={{ color: 'white', bg: 'gray.700' }}
+                                        onClick={handleCopyInvite}
+                                    />
+                                </Tooltip>
+                            </>
                         )}
-                        <Tooltip label="Convidar Amigo">
-                            <IconButton
-                                aria-label="Copy Invite" icon={<BsClipboard />}
-                                size="xs" variant="ghost" color="gray.400"
-                                _hover={{ color: 'white', bg: 'gray.700' }}
-                                onClick={handleCopyInvite}
-                            />
-                        </Tooltip>
                     </HStack>
                 </Flex>
 
-                {/* Channel List Dinâmica do Supabase */}
-                <VStack align="stretch" flex="1" overflowY="auto" px={2} py={4} spacing={1}>
-                    {/* Text Channels */}
-                    <Flex px={2} mb={1} align="center" justify="space-between">
-                        <Text fontSize="xs" fontWeight="bold" color="gray.500" textTransform="uppercase" letterSpacing="wider">
-                            Canais de Texto
-                        </Text>
-                        {selectedServer && (
-                            <Tooltip label="Criar Canal de Texto">
-                                <IconButton aria-label="Criar Canal" icon={<BsPlusLg />} size="xs" variant="ghost" color="gray.500" _hover={{ color: 'white', bg: 'gray.700' }} onClick={() => { setChannelTypeToCreate('text'); createChannelDisclosure.onOpen(); }} />
-                            </Tooltip>
-                        )}
-                    </Flex>
-                    {textChannels.length === 0 ? (
-                        <Text fontSize="xs" color="gray.600" px={2} fontStyle="italic">Nenhum canal de texto</Text>
-                    ) : (
-                        textChannels.map((c) => (
-                            <ChannelItem
-                                key={c.id}
-                                label={`# ${c.name}`}
-                                isActive={activeChannel?.id === c.id}
-                                onClick={() => handleChannelClick(c)}
-                            />
-                        ))
-                    )}
+                {/* Lista de Canais (Modo Servidor) ou Lista de Amigos/DMs (Modo Início) */}
+                <VStack align="stretch" flex="1" overflowY="auto" px={2} py={3} spacing={1}>
+                    {!selectedServer ? (
+                        /* Modo Amigos e DMs */
+                        <>
+                            {/* Botão Amigos (Abre a view de abas) */}
+                            <Flex
+                                px={3} py={2} borderRadius="md" cursor="pointer"
+                                align="center" gap={3}
+                                bg={activeFriend === null ? 'gray.700' : 'transparent'}
+                                color={activeFriend === null ? 'white' : 'gray.300'}
+                                _hover={{ bg: 'gray.700', color: 'white' }}
+                                transition="all 0.15s"
+                                onClick={() => setActiveFriend(null)}
+                                fontWeight="semibold" fontSize="sm"
+                            >
+                                <Box as={BsPeopleFill} fontSize="16px" color="teal.300" />
+                                <Text>Amigos</Text>
+                            </Flex>
 
-                    <Box h={4} />
+                            <Box h={2} />
 
-                    {/* Voice Channels */}
-                    <Flex px={2} mb={1} align="center" justify="space-between">
-                        <Text fontSize="xs" fontWeight="bold" color="gray.500" textTransform="uppercase" letterSpacing="wider">
-                            Canais de Voz
-                        </Text>
-                        {selectedServer && (
-                            <Tooltip label="Criar Canal de Voz">
-                                <IconButton aria-label="Criar Canal" icon={<BsPlusLg />} size="xs" variant="ghost" color="gray.500" _hover={{ color: 'white', bg: 'gray.700' }} onClick={() => { setChannelTypeToCreate('voice'); createChannelDisclosure.onOpen(); }} />
-                            </Tooltip>
-                        )}
-                    </Flex>
-                    {voiceChannels.length === 0 ? (
-                        <Text fontSize="xs" color="gray.600" px={2} fontStyle="italic">Nenhum canal de voz</Text>
-                    ) : (
-                        voiceChannels.map((c) => (
-                            <ChannelItem 
-                                key={c.id}
-                                label={`🔊 ${c.name}`} 
-                                isActive={activeChannel?.id === c.id} 
-                                isConnected={inVoice && voiceRoomId === c.id}
-                                onClick={() => handleChannelClick(c)} 
-                            />
-                        ))
-                    )}
+                            <Text fontSize="xs" fontWeight="bold" color="gray.500" px={2} mb={1} textTransform="uppercase" letterSpacing="wider">
+                                Conversas Diretas
+                            </Text>
 
-                    {/* Indicador de conectado na voz em background */}
-                    {inVoice && (
-                        <Box pl={8} py={1}>
-                            <HStack spacing={2}>
-                                <Box w={2} h={2} borderRadius="full" bg="green.400" />
-                                <Text fontSize="xs" color="green.300" fontWeight="medium">{userName}</Text>
-                            </HStack>
-                            {remoteStream && (
-                                <HStack spacing={2} mt={1}>
-                                    <Box w={2} h={2} borderRadius="full" bg="green.400" />
-                                    <Text fontSize="xs" color="green.300" fontWeight="medium">Convidado</Text>
-                                </HStack>
+                            {sidebarFriends.length === 0 ? (
+                                <Text fontSize="xs" color="gray.500" px={2} fontStyle="italic">
+                                    Nenhuma conversa ainda
+                                </Text>
+                            ) : (
+                                sidebarFriends.map(friend => {
+                                    const friendName = friend.username || friend.email.split('@')[0];
+                                    const isSelected = activeFriend?.id === friend.id;
+                                    return (
+                                        <Flex
+                                            key={friend.id}
+                                            px={2} py={1.5} borderRadius="md" cursor="pointer"
+                                            align="center" justify="space-between"
+                                            bg={isSelected ? 'gray.700' : 'transparent'}
+                                            color={isSelected ? 'white' : 'gray.400'}
+                                            _hover={{ bg: 'gray.700', color: 'gray.200' }}
+                                            transition="all 0.15s"
+                                            onClick={() => setActiveFriend(friend)}
+                                        >
+                                            <HStack spacing={2.5} minW={0}>
+                                                <Box position="relative">
+                                                    <Avatar size="xs" name={friendName} bg="blue.600" />
+                                                    <Box position="absolute" bottom="-1px" right="-1px" w="7px" h="7px" borderRadius="full" bg="green.400" border="1.5px solid" borderColor="gray.800" />
+                                                </Box>
+                                                <Text fontSize="sm" fontWeight={isSelected ? 'semibold' : 'normal'} isTruncated>
+                                                    {friendName}
+                                                </Text>
+                                            </HStack>
+                                        </Flex>
+                                    );
+                                })
                             )}
-                        </Box>
+                        </>
+                    ) : (
+                        /* Modo Servidor: Canais de Texto e Voz */
+                        <>
+                            <Flex px={2} mb={1} align="center" justify="space-between">
+                                <Text fontSize="xs" fontWeight="bold" color="gray.500" textTransform="uppercase" letterSpacing="wider">
+                                    Canais de Texto
+                                </Text>
+                                <Tooltip label="Criar Canal de Texto">
+                                    <IconButton aria-label="Criar Canal" icon={<BsPlusLg />} size="xs" variant="ghost" color="gray.500" _hover={{ color: 'white', bg: 'gray.700' }} onClick={() => { setChannelTypeToCreate('text'); createChannelDisclosure.onOpen(); }} />
+                                </Tooltip>
+                            </Flex>
+                            {textChannels.length === 0 ? (
+                                <Text fontSize="xs" color="gray.600" px={2} fontStyle="italic">Nenhum canal de texto</Text>
+                            ) : (
+                                textChannels.map((c) => (
+                                    <ChannelItem
+                                        key={c.id}
+                                        label={`# ${c.name}`}
+                                        isActive={activeChannel?.id === c.id}
+                                        onClick={() => handleChannelClick(c)}
+                                    />
+                                ))
+                            )}
+
+                            <Box h={4} />
+
+                            <Flex px={2} mb={1} align="center" justify="space-between">
+                                <Text fontSize="xs" fontWeight="bold" color="gray.500" textTransform="uppercase" letterSpacing="wider">
+                                    Canais de Voz
+                                </Text>
+                                <Tooltip label="Criar Canal de Voz">
+                                    <IconButton aria-label="Criar Canal" icon={<BsPlusLg />} size="xs" variant="ghost" color="gray.500" _hover={{ color: 'white', bg: 'gray.700' }} onClick={() => { setChannelTypeToCreate('voice'); createChannelDisclosure.onOpen(); }} />
+                                </Tooltip>
+                            </Flex>
+                            {voiceChannels.length === 0 ? (
+                                <Text fontSize="xs" color="gray.600" px={2} fontStyle="italic">Nenhum canal de voz</Text>
+                            ) : (
+                                voiceChannels.map((c) => {
+                                    const membersInChannel = voicePresence[c.id] || [];
+                                    return (
+                                        <Box key={c.id} mb={1}>
+                                            <ChannelItem 
+                                                label={`🔊 ${c.name}`} 
+                                                isActive={activeChannel?.id === c.id} 
+                                                isConnected={inVoice && voiceRoomId === c.id}
+                                                onClick={() => handleChannelClick(c)} 
+                                            />
+                                            {/* Presença Global de Voz na Sidebar */}
+                                            {membersInChannel.length > 0 && (
+                                                <VStack align="stretch" pl={6} pt={1} pb={1} spacing={1}>
+                                                    {membersInChannel.map(peerId => {
+                                                        const isSelf = inVoice && voiceRoomId === c.id && (peerId === session?.user?.id || peerId === userName);
+                                                        const displayName = isSelf ? `${userName} (Você)` : peerId.slice(0, 8);
+                                                        return (
+                                                            <HStack key={peerId} spacing={2} px={2} py={0.5} borderRadius="md" bg="blackAlpha.300" _hover={{ bg: 'whiteAlpha.100' }}>
+                                                                <Box position="relative">
+                                                                    <Avatar size="xs" name={displayName.slice(0, 5)} bg="purple.600" color="white" />
+                                                                    <Box position="absolute" bottom="-1px" right="-1px" w="7px" h="7px" borderRadius="full" bg="green.400" border="1.5px solid" borderColor="gray.800" />
+                                                                </Box>
+                                                                <Text fontSize="xs" color="green.300" fontWeight="medium" isTruncated maxW="130px">
+                                                                    {displayName}
+                                                                </Text>
+                                                            </HStack>
+                                                        );
+                                                    })}
+                                                </VStack>
+                                            )}
+                                        </Box>
+                                    );
+                                })
+                            )}
+                        </>
                     )}
                 </VStack>
 
@@ -511,140 +677,127 @@ function App() {
 
             {/* ═══════ Column 3: Main Stage ═══════ */}
             <Flex flex="1" flexDir="column" bg="gray.700" minW={0}>
-                {/* Top bar */}
-                <Flex h="48px" px={4} align="center" borderBottom="1px solid" borderColor="gray.600" bg="gray.700" gap={3} flexShrink={0}>
-                    <Text fontWeight="bold" color="white">
-                        {activeChannel ? (activeChannel.type === 'voice' ? `🔊 ${activeChannel.name}` : `# ${activeChannel.name}`) : (selectedServer?.name || 'CuiCall')}
-                    </Text>
-                    <Box w="1px" h="24px" bg="gray.600" />
-                    <Text fontSize="sm" color="gray.400">
-                        {activeChannel 
-                            ? (activeChannel.type === 'voice' ? 'Chamada de Voz e Vídeo P2P' : 'Canal de texto do servidor')
-                            : 'Bem-vindo ao servidor'}
-                    </Text>
-                    {activeChannel?.type === 'voice' && inVoice && (
-                        <HStack ml="auto" spacing={2}>
-                            <Button size="sm" colorScheme="purple" variant="outline" onClick={shareScreen} leftIcon={<BsShareFill />}>
-                                Compartilhar Tela
-                            </Button>
-                        </HStack>
-                    )}
-                </Flex>
-
-                {/* Main Content */}
-                {activeChannel?.type === 'voice' ? (
-                    <Flex flex="1" overflow="hidden">
-                        {/* Video Grid */}
-                        <Flex flex="1" flexDir="column" p={4} gap={4} overflow="auto">
-                            <Flex flex="1" gap={4} flexDir={{ base: 'column', md: 'row' }} minH="300px">
-                                {/* Local Video / Avatar */}
-                                <Flex flex="1" bg="gray.900" borderRadius="lg" overflow="hidden" position="relative" minH="200px" align="center" justify="center">
-                                    {isCamOff ? (
-                                        <VStack spacing={3}>
-                                            <Avatar size="2xl" name={userName} bg="blue.600" color="white" />
-                                            <Text fontSize="sm" color="gray.500">Câmera desligada</Text>
-                                        </VStack>
-                                    ) : (
-                                        <video ref={localVideoRef} autoPlay muted
-                                            style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                    )}
-                                    <Box position="absolute" bottom={3} left={3} bg="blackAlpha.700" px={2} py={1} borderRadius="md">
-                                        <HStack spacing={1}>
-                                            {isMuted && <Box as={BsMicMuteFill} color="red.400" />}
-                                            <Text fontSize="xs" color="white" fontWeight="medium">{userName} (Você)</Text>
-                                        </HStack>
-                                    </Box>
-                                </Flex>
-
-                                {/* Remote Video / Avatar */}
-                                <Flex flex="1" bg="gray.900" borderRadius="lg" overflow="hidden" position="relative" minH="200px" align="center" justify="center">
-                                    {!remoteStream ? (
-                                        <VStack spacing={3}>
-                                            <Avatar size="2xl" name="?" bg="gray.700" color="gray.500" />
-                                        </VStack>
-                                    ) : (
-                                        <>
-                                            <video ref={remoteVideoRef} autoPlay
-                                                style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                            <Box position="absolute" bottom={3} left={3} bg="blackAlpha.700" px={2} py={1} borderRadius="md">
-                                                <Text fontSize="xs" color="white" fontWeight="medium">Convidado</Text>
-                                            </Box>
-                                        </>
-                                    )}
-                                </Flex>
-                            </Flex>
+                {!selectedServer ? (
+                    /* Visualização de Amigos ou Direct Message */
+                    activeFriend ? (
+                        <DMPanel
+                            currentUserId={session.user.id}
+                            currentUserName={userName}
+                            targetFriend={activeFriend}
+                            messages={directMessages[activeFriend.id] || []}
+                            onSendMessage={sendDirectMessage}
+                            onBack={() => setActiveFriend(null)}
+                            loadMessages={loadDirectMessages}
+                        />
+                    ) : (
+                        <FriendsView
+                            currentUserId={session.user.id}
+                            currentUserName={userName}
+                            onSelectFriend={(friend) => setActiveFriend(friend)}
+                            onSendFriendRequestSignal={sendFriendRequest}
+                            onAcceptFriendRequestSignal={acceptFriendRequest}
+                        />
+                    )
+                ) : (
+                    /* Visualização de Servidor */
+                    <>
+                        {/* Top bar do Servidor */}
+                        <Flex h="48px" px={4} align="center" borderBottom="1px solid" borderColor="gray.600" bg="gray.700" gap={3} flexShrink={0}>
+                            <Text fontWeight="bold" color="white">
+                                {activeChannel ? (activeChannel.type === 'voice' ? `🔊 ${activeChannel.name}` : `# ${activeChannel.name}`) : selectedServer.name}
+                            </Text>
+                            <Box w="1px" h="24px" bg="gray.600" />
+                            <Text fontSize="sm" color="gray.400">
+                                {activeChannel 
+                                    ? (activeChannel.type === 'voice' ? 'Chamada de Voz e Vídeo P2P' : 'Canal de texto do servidor')
+                                    : 'Bem-vindo ao servidor'}
+                            </Text>
+                            {activeChannel?.type === 'voice' && inVoice && (
+                                <HStack ml="auto" spacing={2}>
+                                    <Button size="sm" colorScheme="purple" variant="outline" onClick={shareScreen} leftIcon={<BsShareFill />}>
+                                        Compartilhar Tela
+                                    </Button>
+                                </HStack>
+                            )}
                         </Flex>
 
-                        {/* Voice Chat Panel */}
-                        <ChatPanel messages={currentMessages} chatInput={chatInput} setChatInput={setChatInput}
-                            handleSendMessage={handleSendMessage} messagesEndRef={messagesEndRef} />
-                    </Flex>
-                ) : activeChannel ? (
-                    /* Text Channel View */
-                    <Flex flex="1" overflow="hidden" flexDir="column">
-                        <Box flex="1" overflowY="auto" px={4} py={4}>
-                            <VStack align="stretch" spacing={3}>
-                                {currentMessages.length === 0 && (
-                                    <Flex flex="1" align="center" justify="center" flexDir="column" gap={4} minH="300px">
-                                        <Image src={logo} alt="CuiCall" maxH="80px" objectFit="contain" opacity={0.4} />
-                                        <Heading size="md" color="gray.500">Bem-vindo ao # {activeChannel.name}!</Heading>
-                                        <Text color="gray.600" fontSize="sm">Este é o início do canal #{activeChannel.name}. Comece a conversa!</Text>
-                                    </Flex>
-                                )}
-                                {currentMessages.map((msg, idx) => (
-                                    <HStack key={idx} spacing={3} align="start">
-                                        <Avatar size="sm" name={msg.senderId.slice(0, 5)} bg="teal.600" mt={1} />
-                                        <Box>
-                                            <HStack spacing={2}>
-                                                <Text fontSize="sm" fontWeight="bold" color="gray.200">{msg.senderId}</Text>
-                                                <Text fontSize="xs" color="gray.500">agora</Text>
-                                            </HStack>
-                                            <Text fontSize="sm" color="gray.300">{msg.text}</Text>
-                                        </Box>
-                                    </HStack>
-                                ))}
-                                <div ref={messagesEndRef} />
-                            </VStack>
-                        </Box>
-                        <Box px={4} py={3} borderTop="1px solid" borderColor="gray.600">
-                            <Input
-                                placeholder={`Conversar em # ${activeChannel.name}`}
-                                value={chatInput}
-                                onChange={(e) => setChatInput(e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                                bg="gray.600" border="none" size="md" borderRadius="lg"
-                                _focus={{ boxShadow: 'none', bg: 'gray.500' }}
-                                _placeholder={{ color: 'gray.400' }}
-                            />
-                        </Box>
-                    </Flex>
-                ) : (
-                    /* Welcome / No channel selected */
-                    <Flex flex="1" align="center" justify="center" flexDir="column" gap={4} p={8}>
-                        <Image src={logo} alt="CuiCall" maxH="100px" objectFit="contain" opacity={0.5} />
-                        <Heading size="lg" color="gray.300">{selectedServer?.name || 'CuiCall Home'}</Heading>
-                        <Text color="gray.400" textAlign="center" maxW="450px">
-                            Selecione um canal de texto na barra lateral para ver o histórico e conversar, ou entre em um canal de voz para iniciar uma chamada.
-                        </Text>
-                    </Flex>
+                        {/* Conteúdo do Canal */}
+                        {activeChannel?.type === 'voice' ? (
+                            <Flex flex="1" overflow="hidden">
+                                <VideoGrid
+                                    localStream={localStream}
+                                    remoteStreams={remoteStreams}
+                                    isCamOff={isCamOff}
+                                    isMuted={isMuted}
+                                    isScreenSharing={isScreenSharing}
+                                    userName={userName}
+                                />
+                                <ChatPanel messages={currentMessages} chatInput={chatInput} setChatInput={setChatInput}
+                                    handleSendMessage={handleSendMessage} />
+                            </Flex>
+                        ) : activeChannel ? (
+                            <Flex flex="1" overflow="hidden" flexDir="column">
+                                <Box flex="1" px={3} py={2} position="relative">
+                                    {currentMessages.length === 0 ? (
+                                        <Flex flex="1" align="center" justify="center" flexDir="column" gap={4} minH="300px" h="100%">
+                                            <Image src={logo} alt="CuiCall" maxH="80px" objectFit="contain" opacity={0.4} />
+                                            <Heading size="md" color="gray.500">Bem-vindo ao # {activeChannel.name}!</Heading>
+                                            <Text color="gray.600" fontSize="sm">Este é o início do canal #{activeChannel.name}. Comece a conversa!</Text>
+                                        </Flex>
+                                    ) : (
+                                        <Virtuoso
+                                            data={currentMessages}
+                                            initialTopMostItemIndex={currentMessages.length > 0 ? currentMessages.length - 1 : 0}
+                                            followOutput="smooth"
+                                            style={{ height: '100%', width: '100%' }}
+                                            itemContent={(index, msg) => (
+                                                <ChatMessageItem key={index} message={msg} index={index} />
+                                            )}
+                                        />
+                                    )}
+                                </Box>
+                                <Box px={4} py={3} borderTop="1px solid" borderColor="gray.600">
+                                    <Input
+                                        placeholder={`Conversar em # ${activeChannel.name}`}
+                                        value={chatInput}
+                                        onChange={(e) => setChatInput(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                                        bg="gray.600" border="none" size="md" borderRadius="lg"
+                                        _focus={{ boxShadow: 'none', bg: 'gray.500' }}
+                                        _placeholder={{ color: 'gray.400' }}
+                                    />
+                                </Box>
+                            </Flex>
+                        ) : (
+                            <Flex flex="1" align="center" justify="center" flexDir="column" gap={4} p={8}>
+                                <Image src={logo} alt="CuiCall" maxH="100px" objectFit="contain" opacity={0.5} />
+                                <Heading size="lg" color="gray.300">{selectedServer.name}</Heading>
+                                <Text color="gray.400" textAlign="center" maxW="450px">
+                                    Selecione um canal de texto na barra lateral para ver o histórico e conversar, ou entre em um canal de voz para iniciar uma chamada.
+                                </Text>
+                            </Flex>
+                        )}
+                    </>
                 )}
             </Flex>
 
             {/* ═══════ Column 4: Members Sidebar (240px) ═══════ */}
-            <Flex w="240px" minW="240px" bg="gray.800" flexDir="column" borderLeft="1px solid" borderColor="gray.700" display={{ base: 'none', xl: 'flex' }}>
-                <Box px={4} py={4}>
-                    <Text fontSize="xs" fontWeight="bold" color="gray.500" textTransform="uppercase" letterSpacing="wider" mb={3}>
-                        Membros Online — {inVoice ? (remoteStream ? 2 : 1) : 1}
-                    </Text>
-                    <VStack align="stretch" spacing={2}>
-                        <MemberItem name={userName} letter={userEmail.charAt(0).toUpperCase()} bg="blue.600"
-                            status={inVoice ? '🔊 Na Sala de Vídeo' : 'Online'} />
-                        {inVoice && remoteStream && (
-                            <MemberItem name="Convidado" letter="C" bg="green.600" status="🔊 Na Sala de Vídeo" />
-                        )}
-                    </VStack>
-                </Box>
-            </Flex>
+            {selectedServer && (
+                <Flex w="240px" minW="240px" bg="gray.800" flexDir="column" borderLeft="1px solid" borderColor="gray.700" display={{ base: 'none', xl: 'flex' }}>
+                    <Box px={4} py={4}>
+                        <Text fontSize="xs" fontWeight="bold" color="gray.500" textTransform="uppercase" letterSpacing="wider" mb={3}>
+                            Membros Online — {inVoice ? (1 + remoteStreams.length) : 1}
+                        </Text>
+                        <VStack align="stretch" spacing={2}>
+                            <MemberItem name={userName} letter={userEmail.charAt(0).toUpperCase()} bg="blue.600"
+                                status={inVoice ? '🔊 Na Sala de Vídeo' : 'Online'} />
+                            {remoteStreams.map(rs => (
+                                <MemberItem key={rs.peerId} name={rs.peerId.slice(0, 8)} letter={rs.peerId.charAt(0).toUpperCase()} bg="green.600" status="🔊 Na Sala de Vídeo" />
+                            ))}
+                        </VStack>
+                    </Box>
+                </Flex>
+            )}
 
             {/* ═══════ Modals ═══════ */}
             <SettingsModal 
@@ -698,30 +851,28 @@ function ChannelItem({ label, isActive, isConnected, onClick }: { label: string;
     );
 }
 
-function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage, messagesEndRef }: any) {
+function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage }: any) {
     return (
         <Flex w="300px" minW="300px" flexDir="column" bg="gray.800" borderLeft="1px solid" borderColor="gray.600">
             <Flex h="48px" px={4} align="center" borderBottom="1px solid" borderColor="gray.700" flexShrink={0}>
                 <Text fontWeight="bold" color="white" fontSize="sm">Chat da Sala</Text>
             </Flex>
-            <Box flex="1" overflowY="auto" px={3} py={3}>
-                <VStack align="stretch" spacing={3}>
-                    {messages.length === 0 && (
-                        <Text fontSize="sm" color="gray.500" textAlign="center" mt={4}>
-                            Nenhuma mensagem ainda. Comece a conversa!
-                        </Text>
-                    )}
-                    {messages.map((msg: any, idx: number) => (
-                        <HStack key={idx} spacing={2} align="start">
-                            <Avatar size="xs" name={msg.senderId.slice(0, 5)} bg="teal.600" mt={0.5} />
-                            <Box>
-                                <Text fontSize="xs" color="gray.400">{msg.senderId}</Text>
-                                <Text fontSize="sm" color="gray.200">{msg.text}</Text>
-                            </Box>
-                        </HStack>
-                    ))}
-                    <div ref={messagesEndRef} />
-                </VStack>
+            <Box flex="1" px={2} py={2} position="relative">
+                {messages.length === 0 ? (
+                    <Text fontSize="sm" color="gray.500" textAlign="center" mt={4}>
+                        Nenhuma mensagem ainda. Comece a conversa!
+                    </Text>
+                ) : (
+                    <Virtuoso
+                        data={messages}
+                        initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
+                        followOutput="smooth"
+                        style={{ height: '100%', width: '100%' }}
+                        itemContent={(index: number, msg: any) => (
+                            <ChatMessageItem key={index} message={msg} index={index} isCompact={true} />
+                        )}
+                    />
+                )}
             </Box>
             <Box px={3} py={3} borderTop="1px solid" borderColor="gray.700">
                 <HStack>

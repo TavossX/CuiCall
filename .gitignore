@@ -28,3 +28,6 @@ target/
 .idea/
 *.swp
 *.DS_Store
+
+# Database SQL
+*.sql

@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CuiCall — Confirmação de E-mail</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+            background-color: #111827;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            text-align: center;
+            max-width: 440px;
+            padding: 48px 32px;
+            background-color: #1a202c;
+            border-radius: 16px;
+            border: 1px solid #2d3748;
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(16px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .icon {
+            width: 72px;
+            height: 72px;
+            margin: 0 auto 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 36px;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        .icon-success { background-color: rgba(72, 187, 120, 0.15); }
+        .icon-error   { background-color: rgba(245, 101, 101, 0.15); }
+        .icon-loading { background-color: rgba(99, 179, 237, 0.15); }
+
+        h1 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 12px;
+        }
+
+        p {
+            font-size: 15px;
+            color: #a0aec0;
+            line-height: 1.6;
+            margin-bottom: 8px;
+        }
+
+        .hint {
+            margin-top: 24px;
+            padding: 14px 18px;
+            background-color: #1a1a2e;
+            border: 1px solid #2d3748;
+            border-radius: 10px;
+            font-size: 13px;
+            color: #718096;
+        }
+
+        .spinner {
+            width: 36px;
+            height: 36px;
+            border: 3px solid #2d3748;
+            border-top-color: #63b3ed;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .badge {
+            display: inline-block;
+            margin-top: 24px;
+            padding: 6px 14px;
+            background-color: rgba(49, 130, 206, 0.15);
+            border: 1px solid rgba(49, 130, 206, 0.3);
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #63b3ed;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container" id="content">
+        <!-- Estado inicial: loading -->
+        <div class="icon icon-loading">
+            <div class="spinner"></div>
+        </div>
+        <h1>Verificando...</h1>
+        <p>Confirmando seu endereço de e-mail.</p>
+    </div>
+
+    <script>
+        function render(type) {
+            const el = document.getElementById('content');
+
+            if (type === 'success') {
+                el.innerHTML = `
+                    <div class="icon icon-success">✅</div>
+                    <h1>E-mail Confirmado!</h1>
+                    <p>Sua conta no <strong style="color:#63b3ed">CuiCall</strong> foi ativada com sucesso.</p>
+                    <p>Você já pode fechar esta página e voltar ao aplicativo.</p>
+                    <div class="hint">
+                        💡 Abra o <strong>CuiCall</strong> no seu computador e faça login com seu e-mail e senha.
+                    </div>
+                    <div class="badge">CONTA VERIFICADA</div>
+                `;
+            } else {
+                // Pega a descrição do erro da URL
+                const params = new URLSearchParams(window.location.hash.substring(1));
+                const desc = params.get('error_description') || 'O link de confirmação é inválido ou expirou.';
+                const readableDesc = decodeURIComponent(desc.replace(/\+/g, ' '));
+
+                el.innerHTML = `
+                    <div class="icon icon-error">❌</div>
+                    <h1>Erro na Confirmação</h1>
+                    <p>${readableDesc}</p>
+                    <div class="hint">
+                        💡 Tente fazer login no <strong>CuiCall</strong> novamente. Um novo link de confirmação será enviado ao seu e-mail.
+                    </div>
+                `;
+            }
+        }
+
+        // Analisa o hash da URL retornado pelo Supabase
+        (function() {
+            const hash = window.location.hash.substring(1);
+            const params = new URLSearchParams(hash);
+
+            // Pequeno delay para mostrar o loading
+            setTimeout(() => {
+                if (params.get('error')) {
+                    render('error');
+                } else if (params.get('access_token')) {
+                    render('success');
+                } else {
+                    // Acesso direto sem parâmetros
+                    render('success');
+                }
+            }, 800);
+        })();
+    </script>
+</body>
+</html>
