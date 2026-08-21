@@ -56,12 +56,12 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
             if (user) {
                 const { data } = await supabase
                     .from('profiles')
-                    .select('display_name, avatar_url')
+                    .select('*')
                     .eq('id', user.id)
-                    .single();
+                    .maybeSingle();
                 
                 if (data) {
-                    setDisplayName(data.display_name || '');
+                    setDisplayName(data.username || (data as any).display_name || '');
                     setAvatarUrl(data.avatar_url || '');
                 }
             }
@@ -87,44 +87,68 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
 
     const handleSaveProfile = async () => {
         setIsSavingProfile(true);
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-            let finalAvatarUrl = avatarUrl;
-            
-            if (avatarFile) {
-                const fileExt = avatarFile.name.split('.').pop();
-                const fileName = `${Date.now()}.${fileExt}`;
-                const { error: uploadError } = await supabase.storage.from('images').upload(fileName, avatarFile);
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+                let finalAvatarUrl = avatarUrl;
                 
-                if (uploadError) {
-                    toast({ title: 'Erro no upload da imagem', description: uploadError.message, status: 'error' });
-                    setIsSavingProfile(false);
-                    return;
+                if (avatarFile) {
+                    const fileExt = avatarFile.name.split('.').pop();
+                    const fileName = `${user.id}-${Date.now()}.${fileExt}`;
+                    const { error: uploadError } = await supabase.storage.from('images').upload(fileName, avatarFile, {
+                        upsert: true
+                    });
+                    
+                    if (uploadError) {
+                        toast({ title: 'Erro no upload da imagem', description: uploadError.message, status: 'error' });
+                        setIsSavingProfile(false);
+                        return;
+                    }
+                    
+                    const { data } = supabase.storage.from('images').getPublicUrl(fileName);
+                    finalAvatarUrl = data.publicUrl;
+                    setAvatarUrl(data.publicUrl);
                 }
-                
-                const { data } = supabase.storage.from('images').getPublicUrl(fileName);
-                finalAvatarUrl = data.publicUrl;
-                setAvatarUrl(data.publicUrl);
-            }
 
-            const { error } = await supabase
-                .from('profiles')
-                .upsert({
-                    id: user.id,
-                    display_name: displayName,
-                    avatar_url: finalAvatarUrl,
-                    updated_at: new Date()
-                });
-            
-            if (error) {
-                toast({ title: 'Erro ao salvar perfil', description: error.message, status: 'error' });
-            } else {
-                toast({ title: 'Perfil atualizado com sucesso', status: 'success', duration: 2000 });
-                setAvatarFile(null); // Reset the selected file
+                // Tenta update primeiro (respeita policy for update)
+                const { error: updateError, data: updateData } = await supabase
+                    .from('profiles')
+                    .update({
+                        username: displayName.trim(),
+                        avatar_url: finalAvatarUrl,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', user.id)
+                    .select();
+
+                // Se a linha ainda não existia, tenta upsert completo com email
+                if (updateError || !updateData || updateData.length === 0) {
+                    const { error: upsertError } = await supabase
+                        .from('profiles')
+                        .upsert({
+                            id: user.id,
+                            email: user.email,
+                            username: displayName.trim(),
+                            avatar_url: finalAvatarUrl,
+                            updated_at: new Date().toISOString()
+                        });
+
+                    if (upsertError) {
+                        toast({ title: 'Erro ao salvar perfil', description: upsertError.message, status: 'error' });
+                        setIsSavingProfile(false);
+                        return;
+                    }
+                }
+
+                toast({ title: 'Perfil atualizado com sucesso!', status: 'success', duration: 2000 });
+                setAvatarFile(null);
                 if (onProfileUpdated) onProfileUpdated();
             }
+        } catch (err: any) {
+            toast({ title: 'Erro inesperado', description: err.message || 'Falha ao salvar', status: 'error' });
+        } finally {
+            setIsSavingProfile(false);
         }
-        setIsSavingProfile(false);
     };
 
     return (
