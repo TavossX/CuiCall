@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Box, Flex, HStack, Text, Input, Avatar, IconButton, Tooltip } from '@chakra-ui/react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+    Box, Flex, HStack, Text, Input, Avatar, IconButton, Tooltip, Spinner, useToast
+} from '@chakra-ui/react';
 import { Virtuoso } from 'react-virtuoso';
-import { BsArrowLeft, BsSendFill } from 'react-icons/bs';
+import { BsArrowLeft, BsSendFill, BsPaperclip } from 'react-icons/bs';
 import { supabase } from '../supabaseClient';
 import { ChatMessageItem } from './ChatMessage';
 import type { ChatMessage } from '../useWebRTC';
@@ -30,6 +32,9 @@ export const DMPanel = ({
 }: DMPanelProps) => {
     const [inputText, setInputText] = useState('');
     const [loading, setLoading] = useState(true);
+    const [isUploading, setIsUploading] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const toast = useToast();
 
     // Carrega histórico de DMs entre os dois usuários no Supabase
     const fetchDMHistory = useCallback(async () => {
@@ -47,7 +52,8 @@ export const DMPanel = ({
                 const formatted: ChatMessage[] = data.map((m: any) => ({
                     id: m.id,
                     senderId: m.sender_id === currentUserId ? currentUserName : (targetFriend.username || targetFriend.email.split('@')[0]),
-                    text: m.text,
+                    text: m.text || '',
+                    attachment_url: m.attachment_url || null,
                     created_at: m.created_at,
                 }));
                 loadMessages(targetFriend.id, formatted);
@@ -63,10 +69,90 @@ export const DMPanel = ({
         fetchDMHistory();
     }, [fetchDMHistory]);
 
+    // Upload de anexo e envio
+    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !currentUserId || !targetFriend.id) return;
+
+        // Reset input
+        e.target.value = '';
+
+        if (!file.type.startsWith('image/')) {
+            toast({ title: 'Formato não suportado', description: 'Por favor, envie apenas imagens (PNG, JPG, GIF, WebP).', status: 'warning' });
+            return;
+        }
+
+        if (file.size > 10 * 1024 * 1024) {
+            toast({ title: 'Arquivo muito grande', description: 'O tamanho máximo é 10MB.', status: 'warning' });
+            return;
+        }
+
+        setIsUploading(true);
+
+        try {
+            const fileExt = file.name.split('.').pop() || 'png';
+            const fileName = `dm-${currentUserId}-${Date.now()}.${fileExt}`;
+
+            const { error: uploadError } = await supabase.storage
+                .from('chat_attachments')
+                .upload(fileName, file, { upsert: true });
+
+            if (uploadError) {
+                console.error('Erro no upload para chat_attachments:', uploadError);
+                toast({ title: 'Erro no envio do anexo', description: uploadError.message, status: 'error' });
+                return;
+            }
+
+            const { data } = supabase.storage.from('chat_attachments').getPublicUrl(fileName);
+            const attachmentUrl = data.publicUrl;
+
+            // Salva no banco com o anexo
+            const textContent = inputText.trim();
+            const { data: insertedMsg, error: insertError } = await supabase
+                .from('direct_messages')
+                .insert([{
+                    sender_id: currentUserId,
+                    receiver_id: targetFriend.id,
+                    text: textContent,
+                    attachment_url: attachmentUrl
+                }])
+                .select()
+                .single();
+
+            if (insertError) throw insertError;
+
+            setInputText('');
+
+            // Dispara SignalR
+            onSendMessage(targetFriend.id, textContent, {
+                id: insertedMsg?.id,
+                senderName: currentUserName,
+                attachment_url: attachmentUrl,
+                created_at: insertedMsg?.created_at,
+            });
+
+            // Atualiza local
+            const newMsg: ChatMessage = {
+                id: insertedMsg?.id,
+                senderId: currentUserName,
+                text: textContent,
+                attachment_url: attachmentUrl,
+                created_at: insertedMsg?.created_at,
+            };
+            loadMessages(targetFriend.id, [...(messages || []), newMsg]);
+
+        } catch (err: any) {
+            console.error('Erro ao enviar imagem DM:', err);
+            toast({ title: 'Erro ao enviar imagem', description: err.message, status: 'error' });
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
     // Envio de nova mensagem direta
     const handleSend = async () => {
         const text = inputText.trim();
-        if (!text || !currentUserId || !targetFriend.id) return;
+        if (!text || !currentUserId || !targetFriend.id || isUploading) return;
 
         setInputText('');
 
@@ -155,7 +241,7 @@ export const DMPanel = ({
                             Este é o início da sua conversa direta com @{friendDisplayName}
                         </Text>
                         <Text fontSize="xs" color="gray.500">
-                            Envie uma mensagem para começar!
+                            Envie uma mensagem ou imagem para começar!
                         </Text>
                     </Flex>
                 ) : (
@@ -173,9 +259,28 @@ export const DMPanel = ({
 
             {/* Input de Mensagem */}
             <Box px={4} py={3} borderTop="1px solid" borderColor="gray.600" bg="gray.750">
-                <HStack>
+                <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelect}
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                />
+                <HStack spacing={2}>
+                    <Tooltip label={isUploading ? "Enviando anexo..." : "Enviar imagem"}>
+                        <IconButton
+                            aria-label="Anexar Imagem"
+                            icon={isUploading ? <Spinner size="xs" color="blue.400" /> : <BsPaperclip />}
+                            size="md"
+                            variant="ghost"
+                            color="gray.400"
+                            _hover={{ color: 'white', bg: 'gray.700' }}
+                            onClick={() => fileInputRef.current?.click()}
+                            isDisabled={isUploading}
+                        />
+                    </Tooltip>
                     <Input
-                        placeholder={`Conversar com @${friendDisplayName}`}
+                        placeholder={isUploading ? "Enviando imagem..." : `Conversar com @${friendDisplayName}`}
                         value={inputText}
                         onChange={(e) => setInputText(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleSend()}
@@ -185,14 +290,17 @@ export const DMPanel = ({
                         borderRadius="lg"
                         _focus={{ boxShadow: 'none', bg: 'gray.850' }}
                         _placeholder={{ color: 'gray.400' }}
+                        isDisabled={isUploading}
                     />
                     <IconButton
                         aria-label="Enviar"
                         icon={<BsSendFill />}
                         colorScheme="blue"
                         size="md"
+                        borderRadius="lg"
                         onClick={handleSend}
-                        isDisabled={!inputText.trim()}
+                        isDisabled={(!inputText.trim() && !isUploading) || isUploading}
+                        isLoading={isUploading}
                     />
                 </HStack>
             </Box>

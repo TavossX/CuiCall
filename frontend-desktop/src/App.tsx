@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     Box, Button, Input, VStack, HStack, Heading, Text, Flex, Image, Spinner, Tooltip, IconButton, Avatar, useDisclosure, useToast
 } from '@chakra-ui/react';
@@ -23,7 +23,7 @@ import { KuiAvatarIcon } from './components/KuiAvatar';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import {
     BsMicFill, BsMicMuteFill, BsCameraVideoFill, BsCameraVideoOffFill, BsTelephoneXFill,
-    BsBoxArrowRight, BsShareFill, BsGearFill, BsClipboard, BsPlusLg, BsPeopleFill, BsCompass
+    BsBoxArrowRight, BsShareFill, BsGearFill, BsClipboard, BsPlusLg, BsPeopleFill, BsCompass, BsPaperclip
 } from 'react-icons/bs';
 
 export interface Channel {
@@ -46,7 +46,9 @@ function App() {
     const [activeFriend, setActiveFriend] = useState<FriendProfile | null>(null);
     const [sidebarFriends, setSidebarFriends] = useState<FriendProfile[]>([]);
     const [channelTypeToCreate, setChannelTypeToCreate] = useState<'text' | 'voice'>('text');
-    const [userProfile, setUserProfile] = useState<{ display_name?: string; avatar_url?: string } | null>(null);
+    const [userProfile, setUserProfile] = useState<{ username?: string; display_name?: string; avatar_url?: string } | null>(null);
+    const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+    const channelFileInputRef = useRef<HTMLInputElement>(null);
 
     const settingsDisclosure = useDisclosure();
     const createServerDisclosure = useDisclosure();
@@ -290,7 +292,8 @@ function App() {
         if (!error && data) {
             const formatted = data.map((m: any) => ({
                 senderId: m.user_id === session?.user?.id ? userName : m.user_id.slice(0, 8),
-                text: m.content,
+                text: m.content || '',
+                attachment_url: m.attachment_url || null,
                 id: m.id,
                 created_at: m.created_at,
             }));
@@ -332,8 +335,74 @@ function App() {
         setActiveFriend(null);
     };
 
+    const handleChannelFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !activeChannel || !session?.user) return;
+        e.target.value = '';
+
+        if (!file.type.startsWith('image/')) {
+            toast({ title: 'Formato não suportado', description: 'Por favor, envie apenas imagens (PNG, JPG, GIF, WebP).', status: 'warning' });
+            return;
+        }
+
+        if (file.size > 10 * 1024 * 1024) {
+            toast({ title: 'Arquivo muito grande', description: 'O tamanho máximo do anexo é 10MB.', status: 'warning' });
+            return;
+        }
+
+        setIsUploadingAttachment(true);
+
+        try {
+            const fileExt = file.name.split('.').pop() || 'png';
+            const fileName = `channel-${session.user.id}-${Date.now()}.${fileExt}`;
+            const { error: uploadError } = await supabase.storage
+                .from('chat_attachments')
+                .upload(fileName, file, { upsert: true });
+
+            if (uploadError) throw uploadError;
+
+            const { data } = supabase.storage.from('chat_attachments').getPublicUrl(fileName);
+            const attachmentUrl = data.publicUrl;
+
+            const textToSend = chatInput.trim();
+            const channelId = activeChannel.id;
+            setChatInput('');
+
+            const { data: insertedMsg, error: insertError } = await supabase
+                .from('messages')
+                .insert([{
+                    channel_id: channelId,
+                    user_id: session.user.id,
+                    content: textToSend,
+                    attachment_url: attachmentUrl
+                }])
+                .select()
+                .single();
+
+            if (insertError) throw insertError;
+
+            await sendMessage(userName, textToSend, channelId, attachmentUrl);
+
+            setChannelMessages(prev => ({
+                ...prev,
+                [channelId]: [...(prev[channelId] || []), {
+                    id: insertedMsg?.id,
+                    senderId: userName,
+                    text: textToSend,
+                    attachment_url: attachmentUrl,
+                    created_at: insertedMsg?.created_at
+                }]
+            }));
+        } catch (err: any) {
+            console.error('Erro ao enviar anexo no canal:', err);
+            toast({ title: 'Erro ao enviar imagem', description: err.message, status: 'error' });
+        } finally {
+            setIsUploadingAttachment(false);
+        }
+    };
+
     const handleSendMessage = async () => {
-        if (!chatInput.trim() || !activeChannel || !session?.user) return;
+        if (!chatInput.trim() || !activeChannel || !session?.user || isUploadingAttachment) return;
         const textToSend = chatInput.trim();
         const channelId = activeChannel.id;
         setChatInput('');
@@ -792,8 +861,14 @@ function App() {
                                     isScreenSharing={isScreenSharing}
                                     userName={userName}
                                 />
-                                <ChatPanel messages={currentMessages} chatInput={chatInput} setChatInput={setChatInput}
-                                    handleSendMessage={handleSendMessage} />
+                                <ChatPanel
+                                    messages={currentMessages}
+                                    chatInput={chatInput}
+                                    setChatInput={setChatInput}
+                                    handleSendMessage={handleSendMessage}
+                                    handleFileSelect={handleChannelFileSelect}
+                                    isUploading={isUploadingAttachment}
+                                />
                             </Flex>
                         ) : activeChannel ? (
                             <Flex flex="1" overflow="hidden" flexDir="column">
@@ -816,16 +891,47 @@ function App() {
                                         />
                                     )}
                                 </Box>
-                                <Box px={4} py={3} borderTop="1px solid" borderColor="gray.600">
-                                    <Input
-                                        placeholder={`Conversar em # ${activeChannel.name}`}
-                                        value={chatInput}
-                                        onChange={(e) => setChatInput(e.target.value)}
-                                        onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                                        bg="gray.600" border="none" size="md" borderRadius="lg"
-                                        _focus={{ boxShadow: 'none', bg: 'gray.500' }}
-                                        _placeholder={{ color: 'gray.400' }}
+                                <Box px={4} py={3} borderTop="1px solid" borderColor="gray.600" bg="gray.750">
+                                    <input
+                                        type="file"
+                                        ref={channelFileInputRef}
+                                        onChange={handleChannelFileSelect}
+                                        accept="image/*"
+                                        style={{ display: 'none' }}
                                     />
+                                    <HStack spacing={2}>
+                                        <Tooltip label={isUploadingAttachment ? "Enviando imagem..." : "Enviar anexo"}>
+                                            <IconButton
+                                                aria-label="Anexar Imagem"
+                                                icon={isUploadingAttachment ? <Spinner size="xs" color="blue.400" /> : <BsPaperclip />}
+                                                size="md"
+                                                variant="ghost"
+                                                color="gray.400"
+                                                _hover={{ color: 'white', bg: 'gray.700' }}
+                                                onClick={() => channelFileInputRef.current?.click()}
+                                                isDisabled={isUploadingAttachment}
+                                            />
+                                        </Tooltip>
+                                        <Input
+                                            placeholder={isUploadingAttachment ? "Enviando anexo..." : `Conversar em # ${activeChannel.name}`}
+                                            value={chatInput}
+                                            onChange={(e) => setChatInput(e.target.value)}
+                                            onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                                            bg="gray.800" border="none" size="md" borderRadius="lg"
+                                            _focus={{ boxShadow: 'none', bg: 'gray.850' }}
+                                            _placeholder={{ color: 'gray.400' }}
+                                            isDisabled={isUploadingAttachment}
+                                        />
+                                        <Button
+                                            colorScheme="blue"
+                                            size="md"
+                                            onClick={handleSendMessage}
+                                            isDisabled={!chatInput.trim() || isUploadingAttachment}
+                                            isLoading={isUploadingAttachment}
+                                        >
+                                            Enviar
+                                        </Button>
+                                    </HStack>
                                 </Box>
                             </Flex>
                         ) : (
@@ -920,7 +1026,9 @@ function ChannelItem({ label, isActive, isConnected, onClick }: { label: string;
     );
 }
 
-function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage }: any) {
+function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage, handleFileSelect, isUploading }: any) {
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
     return (
         <Flex w="300px" minW="300px" flexDir="column" bg="gray.800" borderLeft="1px solid" borderColor="gray.600">
             <Flex h="48px" px={4} align="center" borderBottom="1px solid" borderColor="gray.700" flexShrink={0}>
@@ -944,12 +1052,41 @@ function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage }: any
                 )}
             </Box>
             <Box px={3} py={3} borderTop="1px solid" borderColor="gray.700">
-                <HStack>
-                    <Input placeholder="Enviar mensagem..." value={chatInput}
+                <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelect}
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                />
+                <HStack spacing={1.5}>
+                    <Tooltip label={isUploading ? "Enviando imagem..." : "Enviar anexo"}>
+                        <IconButton
+                            aria-label="Anexar Imagem"
+                            icon={isUploading ? <Spinner size="xs" color="blue.400" /> : <BsPaperclip />}
+                            size="sm"
+                            variant="ghost"
+                            color="gray.400"
+                            _hover={{ color: 'white', bg: 'gray.700' }}
+                            onClick={() => fileInputRef.current?.click()}
+                            isDisabled={isUploading}
+                        />
+                    </Tooltip>
+                    <Input
+                        placeholder={isUploading ? "Enviando..." : "Mensagem..."}
+                        value={chatInput}
                         onChange={(e: any) => setChatInput(e.target.value)}
                         onKeyDown={(e: any) => e.key === 'Enter' && handleSendMessage()}
-                        bg="gray.900" border="none" size="sm" _focus={{ boxShadow: 'none' }} />
-                    <Button colorScheme="blue" size="sm" onClick={handleSendMessage} isDisabled={!chatInput.trim()}>
+                        bg="gray.900" border="none" size="sm" _focus={{ boxShadow: 'none' }}
+                        isDisabled={isUploading}
+                    />
+                    <Button
+                        colorScheme="blue"
+                        size="sm"
+                        onClick={handleSendMessage}
+                        isDisabled={!chatInput.trim() || isUploading}
+                        isLoading={isUploading}
+                    >
                         Enviar
                     </Button>
                 </HStack>

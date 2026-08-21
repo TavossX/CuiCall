@@ -148,9 +148,9 @@ public class CallHub : Hub
 
     // ═══════ Channel Chat ═══════
 
-    public async Task SendMessage(string userName, string message, string roomId)
+    public async Task SendMessage(string userName, string message, string roomId, string? attachmentUrl = null)
     {
-        await Clients.Group(roomId).SendAsync("ReceiveMessage", userName, message);
+        await Clients.Group(roomId).SendAsync("ReceiveMessage", userName, message, roomId, attachmentUrl);
     }
 
     // ═══════ Disconnect ═══════

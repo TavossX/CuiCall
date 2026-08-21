@@ -12,6 +12,8 @@ export interface ChatMessage {
     senderId: string;
     text: string;
     id?: string;
+    channelId?: string;
+    attachment_url?: string | null;
     created_at?: string;
 }
 
@@ -290,24 +292,29 @@ export const useWebRTC = () => {
             });
 
             // ── Chat de Servidor ──
-            hub.on("ReceiveMessage", (senderId: string, text: string) => {
-                const targetChannel = currentChannelIdRef.current || voiceRoomIdRef.current || 'cuicall-geral';
-                console.log(`[Chat 💬] Canal ${targetChannel} | De: ${senderId} | Texto: ${text.slice(0, 30)}...`);
+            hub.on("ReceiveMessage", (senderId: string, text: string, roomId?: string, attachmentUrl?: string) => {
+                const targetChannel = roomId || currentChannelIdRef.current || voiceRoomIdRef.current || 'cuicall-geral';
+                console.log(`[Chat 💬] Canal ${targetChannel} | De: ${senderId} | Anexo: ${attachmentUrl ? 'Sim' : 'Não'}`);
                 setChannelMessages(prev => ({
                     ...prev,
-                    [targetChannel]: [...(prev[targetChannel] || []), { senderId, text }]
+                    [targetChannel]: [...(prev[targetChannel] || []), {
+                        senderId,
+                        text,
+                        attachment_url: attachmentUrl || null
+                    }]
                 }));
             });
 
             // ── Direct Messages (DMs) ──
             hub.on("ReceiveDirectMessage", (senderUserId: string, text: string, dmData: any) => {
-                console.log(`[DM 📩] De: ${senderUserId} | Texto: ${text.slice(0, 30)}...`);
+                console.log(`[DM 📩] De: ${senderUserId} | Anexo: ${dmData?.attachment_url ? 'Sim' : 'Não'}`);
                 setDirectMessages(prev => ({
                     ...prev,
                     [senderUserId]: [...(prev[senderUserId] || []), {
                         senderId: dmData?.senderName || senderUserId,
                         text,
                         id: dmData?.id,
+                        attachment_url: dmData?.attachment_url || null,
                         created_at: dmData?.created_at,
                     }]
                 }));
@@ -390,7 +397,7 @@ export const useWebRTC = () => {
 
     // ═══════ Envio de DMs e Amizades ═══════
     const sendDirectMessage = useCallback(async (receiverId: string, text: string, dmData?: any) => {
-        if (!text.trim() || !receiverId) return;
+        if ((!text.trim() && !dmData?.attachment_url) || !receiverId) return;
         const hub = await getHubConnection();
         await hub.invoke("SendDirectMessage", receiverId, text, dmData || null);
     }, [getHubConnection]);
@@ -584,10 +591,10 @@ export const useWebRTC = () => {
         };
     }, []);
 
-    const sendMessage = useCallback(async (userName: string, text: string, channelId: string) => {
-        if (!text.trim() || !channelId) return;
+    const sendMessage = useCallback(async (userName: string, text: string, channelId: string, attachmentUrl?: string | null) => {
+        if ((!text.trim() && !attachmentUrl) || !channelId) return;
         const hub = await getHubConnection();
-        await hub.invoke("SendMessage", userName, text, channelId);
+        await hub.invoke("SendMessage", userName, text, channelId, attachmentUrl || null);
     }, [getHubConnection]);
 
     const loadChannelMessages = useCallback((channelId: string, msgs: ChatMessage[]) => {
