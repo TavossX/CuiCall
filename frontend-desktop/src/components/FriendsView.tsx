@@ -268,7 +268,18 @@ export const FriendsView = ({
     };
 
     return (
-        <Flex flex="1" flexDir="column" bg="gray.700" overflow="hidden">
+        <Tabs
+            variant="soft-rounded"
+            colorScheme="blue"
+            index={tabIndex}
+            onChange={setTabIndex}
+            size="sm"
+            display="flex"
+            flexDirection="column"
+            flex="1"
+            overflow="hidden"
+            bg="gray.700"
+        >
             {/* Topbar das Abas de Amigos */}
             <Flex h="48px" px={4} align="center" borderBottom="1px solid" borderColor="gray.600" bg="gray.750" gap={4} flexShrink={0}>
                 <HStack spacing={2}>
@@ -278,19 +289,17 @@ export const FriendsView = ({
 
                 <Box w="1px" h="20px" bg="gray.600" />
 
-                <Tabs variant="soft-rounded" colorScheme="blue" index={tabIndex} onChange={setTabIndex} size="sm">
-                    <TabList gap={2}>
-                        <Tab color="gray.300" _selected={{ color: 'white', bg: 'blue.600' }}>
-                            Disponíveis ({friends.length})
-                        </Tab>
-                        <Tab color="gray.300" _selected={{ color: 'white', bg: 'blue.600' }}>
-                            Pendentes {pendingRequests.length > 0 && <Badge ml={1.5} colorScheme="red" borderRadius="full">{pendingRequests.length}</Badge>}
-                        </Tab>
-                        <Tab color="green.300" _selected={{ color: 'white', bg: 'green.600' }}>
-                            Adicionar Amigo
-                        </Tab>
-                    </TabList>
-                </Tabs>
+                <TabList gap={2}>
+                    <Tab color="gray.300" _selected={{ color: 'white', bg: 'blue.600' }}>
+                        Disponíveis ({friends.length})
+                    </Tab>
+                    <Tab color="gray.300" _selected={{ color: 'white', bg: 'blue.600' }}>
+                        Pendentes {pendingRequests.length > 0 && <Badge ml={1.5} colorScheme="red" borderRadius="full">{pendingRequests.length}</Badge>}
+                    </Tab>
+                    <Tab color="green.300" _selected={{ color: 'white', bg: 'green.600' }}>
+                        Adicionar Amigo
+                    </Tab>
+                </TabList>
             </Flex>
 
             {/* Conteúdo das Abas */}
@@ -485,6 +494,6 @@ export const FriendsView = ({
                     </TabPanels>
                 )}
             </Box>
-        </Flex>
+        </Tabs>
     );
 };
