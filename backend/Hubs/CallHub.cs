@@ -3,11 +3,16 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace backend.Hubs;
 
+public record VoiceMemberInfo(string ConnectionId, string? UserId, string? UserName, string? AvatarUrl, bool IsMuted);
+
 public class CallHub : Hub
 {
     // ═══════ In-Memory Room & User Tracking ═══════
     // Maps roomId → set of connectionIds currently in that room
     private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> RoomMembers = new();
+
+    // Maps roomId → set of VoiceMemberInfo currently in voice in that room
+    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, VoiceMemberInfo>> RoomVoiceMembers = new();
 
     // Maps connectionId → set of roomIds the connection has joined
     private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> ConnectionRooms = new();
@@ -79,9 +84,16 @@ public class CallHub : Hub
 
     // ═══════ Join / Leave Rooms (Channels / Voice) ═══════
 
-    public async Task JoinRoom(string roomId)
+    public async Task JoinRoom(string roomId, string? userName = null, string? avatarUrl = null, bool isMuted = false)
     {
         var connId = Context.ConnectionId;
+        var userId = ConnectionUsers.TryGetValue(connId, out var uId) ? uId : null;
+
+        var memberInfo = new VoiceMemberInfo(connId, userId, userName ?? "Usuário", avatarUrl ?? "", isMuted);
+
+        // Track voice profile
+        var voiceMembers = RoomVoiceMembers.GetOrAdd(roomId, _ => new ConcurrentDictionary<string, VoiceMemberInfo>());
+        voiceMembers[connId] = memberInfo;
 
         // Track: room → connection
         var members = RoomMembers.GetOrAdd(roomId, _ => new ConcurrentDictionary<string, byte>());
@@ -93,18 +105,29 @@ public class CallHub : Hub
 
         await Groups.AddToGroupAsync(connId, roomId);
 
-        // Notify existing members that a new peer joined (they will create offers)
-        await Clients.GroupExcept(roomId, connId).SendAsync("UserJoined", connId, roomId);
+        // Notify existing members that a new peer joined
+        await Clients.GroupExcept(roomId, connId).SendAsync("UserJoined", connId, roomId, memberInfo);
 
-        // Send the list of existing members to the new joiner so it can prepare for incoming offers
+        // Send the list of existing members (connectionIds) to the new joiner so it can prepare for incoming offers
         var existingMembers = members.Keys.Where(id => id != connId).ToList();
         if (existingMembers.Count > 0)
         {
             await Clients.Caller.SendAsync("ExistingMembers", existingMembers, roomId);
         }
 
-        // Broadcast voice presence update globally
-        await Clients.All.SendAsync("VoiceStateUpdated", roomId, connId, "joined");
+        // Broadcast rich voice presence update globally
+        await Clients.All.SendAsync("VoiceStateUpdated", roomId, memberInfo, "joined");
+    }
+
+    public async Task UpdateVoiceMuteState(string roomId, bool isMuted)
+    {
+        var connId = Context.ConnectionId;
+        if (RoomVoiceMembers.TryGetValue(roomId, out var members) && members.TryGetValue(connId, out var memberInfo))
+        {
+            var updated = memberInfo with { IsMuted = isMuted };
+            members[connId] = updated;
+            await Clients.All.SendAsync("VoiceMemberMuteUpdated", roomId, connId, isMuted);
+        }
     }
 
     public async Task LeaveRoom(string roomId)
@@ -159,12 +182,12 @@ public class CallHub : Hub
 
     // ═══════ Voice State Snapshot ═══════
 
-    public Task<Dictionary<string, List<string>>> GetVoiceState()
+    public Task<Dictionary<string, List<VoiceMemberInfo>>> GetVoiceState()
     {
-        var snapshot = new Dictionary<string, List<string>>();
-        foreach (var (roomId, members) in RoomMembers)
+        var snapshot = new Dictionary<string, List<VoiceMemberInfo>>();
+        foreach (var (roomId, members) in RoomVoiceMembers)
         {
-            var memberList = members.Keys.ToList();
+            var memberList = members.Values.ToList();
             if (memberList.Count > 0)
             {
                 snapshot[roomId] = memberList;
@@ -177,6 +200,16 @@ public class CallHub : Hub
 
     private async Task RemoveFromRoom(string connId, string roomId)
     {
+        VoiceMemberInfo? removedMember = null;
+        if (RoomVoiceMembers.TryGetValue(roomId, out var voiceMembers))
+        {
+            voiceMembers.TryRemove(connId, out removedMember);
+            if (voiceMembers.IsEmpty)
+            {
+                RoomVoiceMembers.TryRemove(roomId, out _);
+            }
+        }
+
         // Remove from room tracking
         if (RoomMembers.TryGetValue(roomId, out var members))
         {
@@ -200,6 +233,7 @@ public class CallHub : Hub
         await Clients.Group(roomId).SendAsync("UserLeft", connId, roomId);
 
         // Broadcast voice presence update globally
-        await Clients.All.SendAsync("VoiceStateUpdated", roomId, connId, "left");
+        var memberToBroadcast = removedMember ?? new VoiceMemberInfo(connId, null, null, null, false);
+        await Clients.All.SendAsync("VoiceStateUpdated", roomId, memberToBroadcast, "left");
     }
 }

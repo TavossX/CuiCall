@@ -21,6 +21,14 @@ export interface RemoteStreamInfo {
     isScreenSharing: boolean;
 }
 
+export interface VoiceMemberInfo {
+    connectionId: string;
+    userId?: string;
+    userName?: string;
+    avatarUrl?: string;
+    isMuted?: boolean;
+}
+
 /**
  * Hook global gerenciador de WebRTC (voz/vídeo P2P Mesh), SignalR (chat de canais, DMs e Amizades).
  * Permanece ativo no nível raiz do App para manter chamadas de voz ativas em background
@@ -36,7 +44,7 @@ export const useWebRTC = () => {
     const [isScreenSharing, setIsScreenSharing] = useState(false);
     const [channelMessages, setChannelMessages] = useState<Record<string, ChatMessage[]>>({});
     const [directMessages, setDirectMessages] = useState<Record<string, ChatMessage[]>>({});
-    const [voicePresence, setVoicePresence] = useState<Record<string, string[]>>({});
+    const [voicePresence, setVoicePresence] = useState<Record<string, VoiceMemberInfo[]>>({});
 
     const connectionRef = useRef<signalR.HubConnection | null>(null);
     const peersRef = useRef(new Map<string, RTCPeerConnection>());
@@ -44,6 +52,7 @@ export const useWebRTC = () => {
     const voiceRoomIdRef = useRef<string | null>(null);
     const currentChannelIdRef = useRef<string | null>(null);
     const isScreenSharingRef = useRef(false);
+    const isMutedRef = useRef(false);
     const registeredUserIdRef = useRef<string | null>(null);
 
     // Keep refs in sync
@@ -240,15 +249,19 @@ export const useWebRTC = () => {
             });
 
             // ── Voice Presence ──
-            hub.on("VoiceStateUpdated", (roomId: string, connectionId: string, action: string) => {
-                console.log(`[VoicePresence 🎙️] Sala ${roomId} | Peer ${connectionId} -> ${action}`);
+            hub.on("VoiceStateUpdated", (roomId: string, memberOrConnId: any, action: string) => {
+                const member: VoiceMemberInfo = typeof memberOrConnId === 'string'
+                    ? { connectionId: memberOrConnId }
+                    : memberOrConnId;
+
+                console.log(`[VoicePresence 🎙️] Sala ${roomId} | Membro ${member.userName || member.connectionId} -> ${action}`);
                 setVoicePresence(prev => {
                     const current = prev[roomId] || [];
                     if (action === 'joined') {
-                        if (current.includes(connectionId)) return prev;
-                        return { ...prev, [roomId]: [...current, connectionId] };
+                        const filtered = current.filter(m => m.connectionId !== member.connectionId);
+                        return { ...prev, [roomId]: [...filtered, member] };
                     } else if (action === 'left') {
-                        const filtered = current.filter(id => id !== connectionId);
+                        const filtered = current.filter(m => m.connectionId !== member.connectionId);
                         if (filtered.length === 0) {
                             const next = { ...prev };
                             delete next[roomId];
@@ -261,8 +274,19 @@ export const useWebRTC = () => {
 
                 // Dispara evento no window para o hook de notificações de voz
                 if (typeof window !== 'undefined') {
-                    window.dispatchEvent(new CustomEvent('cuicall:voiceState', { detail: { roomId, connectionId, action } }));
+                    window.dispatchEvent(new CustomEvent('cuicall:voiceState', {
+                        detail: { roomId, connectionId: member.connectionId, action }
+                    }));
                 }
+            });
+
+            hub.on("VoiceMemberMuteUpdated", (roomId: string, connectionId: string, isMuted: boolean) => {
+                console.log(`[VoicePresence 🔇] Sala ${roomId} | Peer ${connectionId} mutado: ${isMuted}`);
+                setVoicePresence(prev => {
+                    const current = prev[roomId] || [];
+                    const updated = current.map(m => m.connectionId === connectionId ? { ...m, isMuted } : m);
+                    return { ...prev, [roomId]: updated };
+                });
             });
 
             // ── Chat de Servidor ──
@@ -340,7 +364,7 @@ export const useWebRTC = () => {
 
             // Carrega snapshot inicial de presença de voz
             try {
-                const snapshot = await connectionRef.current.invoke<Record<string, string[]>>("GetVoiceState");
+                const snapshot = await connectionRef.current.invoke<Record<string, VoiceMemberInfo[]>>("GetVoiceState");
                 if (snapshot) {
                     setVoicePresence(snapshot);
                 }
@@ -398,7 +422,12 @@ export const useWebRTC = () => {
     }, [getHubConnection]);
 
     // ═══════ Voice Call Controls ═══════
-    const joinVoice = useCallback(async (roomId: string = 'cuicall-voice-main', videoDeviceId?: string, audioDeviceId?: string) => {
+    const joinVoice = useCallback(async (
+        roomId: string = 'cuicall-voice-main',
+        videoDeviceId?: string,
+        audioDeviceId?: string,
+        profile?: { userName?: string; avatarUrl?: string }
+    ) => {
         const constraints: MediaStreamConstraints = {
             video: videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true,
             audio: audioDeviceId ? { deviceId: { exact: audioDeviceId } } : true,
@@ -409,13 +438,14 @@ export const useWebRTC = () => {
         localStreamRef.current = stream;
         setIsCamOff(false);
         setIsMuted(false);
+        isMutedRef.current = false;
         setIsScreenSharing(false);
         setInVoice(true);
         setVoiceRoomId(roomId);
         voiceRoomIdRef.current = roomId;
 
         const hub = await getHubConnection();
-        await hub.invoke("JoinRoom", roomId);
+        await hub.invoke("JoinRoom", roomId, profile?.userName || "Usuário", profile?.avatarUrl || "", false);
 
         peersRef.current.forEach((peer) => {
             const senders = peer.getSenders();
@@ -432,6 +462,7 @@ export const useWebRTC = () => {
         setRemoteStreams([]);
         setIsCamOff(false);
         setIsMuted(false);
+        isMutedRef.current = false;
         setIsScreenSharing(false);
 
         peersRef.current.forEach((peer) => {
@@ -492,14 +523,24 @@ export const useWebRTC = () => {
         }
     }, [isCamOff]);
 
-    const toggleMute = useCallback(() => {
+    const toggleMute = useCallback(async () => {
         const stream = localStreamRef.current;
         if (!stream) return;
+        const newMuted = !isMuted;
         stream.getAudioTracks().forEach(track => {
-            track.enabled = !track.enabled;
+            track.enabled = !newMuted;
         });
-        setIsMuted(prev => !prev);
-    }, []);
+        setIsMuted(newMuted);
+        isMutedRef.current = newMuted;
+
+        if (voiceRoomIdRef.current && connectionRef.current?.state === signalR.HubConnectionState.Connected) {
+            try {
+                await connectionRef.current.invoke("UpdateVoiceMuteState", voiceRoomIdRef.current, newMuted);
+            } catch (err) {
+                console.warn("[SignalR] Erro ao atualizar mute no hub:", err);
+            }
+        }
+    }, [isMuted]);
 
     const shareScreen = useCallback(async () => {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });

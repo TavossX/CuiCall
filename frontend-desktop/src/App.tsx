@@ -306,7 +306,7 @@ function App() {
             if (!inVoice || voiceRoomId !== channel.id) {
                 const videoId = localStorage.getItem('cuicall-video-input') || undefined;
                 const audioId = localStorage.getItem('cuicall-audio-input') || undefined;
-                await joinVoice(channel.id, videoId, audioId);
+                await joinVoice(channel.id, videoId, audioId, { userName, avatarUrl: userAvatar });
             }
             await fetchMessages(channel.id);
         } else {
@@ -610,22 +610,63 @@ function App() {
                                                 isConnected={inVoice && voiceRoomId === c.id}
                                                 onClick={() => handleChannelClick(c)} 
                                             />
-                                            {/* Presença Global de Voz na Sidebar */}
+                                            {/* Presença Global de Voz na Sidebar (Estilo Discord) */}
                                             {membersInChannel.length > 0 && (
-                                                <VStack align="stretch" pl={6} pt={1} pb={1} spacing={1}>
-                                                    {membersInChannel.map(peerId => {
-                                                        const isSelf = inVoice && voiceRoomId === c.id && (peerId === session?.user?.id || peerId === userName);
-                                                        const displayName = isSelf ? `${userName} (Você)` : peerId.slice(0, 8);
+                                                <VStack align="stretch" pl={5} pt={1} pb={1} spacing={0.5}>
+                                                    {membersInChannel.map(member => {
+                                                        const isSelf = inVoice && voiceRoomId === c.id && (member.userId === session?.user?.id || member.userName === userName);
+                                                        const displayName = isSelf ? `${userName} (Você)` : (member.userName || member.connectionId.slice(0, 8));
+                                                        const avatarSrc = isSelf ? userAvatar : (member.avatarUrl || '');
+                                                        const isMemberMuted = isSelf ? isMuted : !!member.isMuted;
+
                                                         return (
-                                                            <HStack key={peerId} spacing={2} px={2} py={0.5} borderRadius="md" bg="blackAlpha.300" _hover={{ bg: 'whiteAlpha.100' }}>
-                                                                <Box position="relative">
-                                                                    <Avatar size="xs" name={displayName.slice(0, 5)} bg="purple.600" color="white" />
-                                                                    <Box position="absolute" bottom="-1px" right="-1px" w="7px" h="7px" borderRadius="full" bg="green.400" border="1.5px solid" borderColor="gray.800" />
-                                                                </Box>
-                                                                <Text fontSize="xs" color="green.300" fontWeight="medium" isTruncated maxW="130px">
-                                                                    {displayName}
-                                                                </Text>
-                                                            </HStack>
+                                                            <Flex
+                                                                key={member.connectionId}
+                                                                align="center"
+                                                                justify="space-between"
+                                                                px={2}
+                                                                py={1}
+                                                                borderRadius="md"
+                                                                _hover={{ bg: 'whiteAlpha.100' }}
+                                                                transition="all 0.15s"
+                                                                cursor="pointer"
+                                                            >
+                                                                <HStack spacing={2} minW={0}>
+                                                                    <Box position="relative">
+                                                                        <Avatar
+                                                                            size="xs"
+                                                                            name={displayName}
+                                                                            src={avatarSrc}
+                                                                            bg="purple.600"
+                                                                            color="white"
+                                                                        />
+                                                                        <Box
+                                                                            position="absolute"
+                                                                            bottom="-1px"
+                                                                            right="-1px"
+                                                                            w="7px"
+                                                                            h="7px"
+                                                                            borderRadius="full"
+                                                                            bg="green.400"
+                                                                            border="1.5px solid"
+                                                                            borderColor="gray.800"
+                                                                        />
+                                                                    </Box>
+                                                                    <Text
+                                                                        fontSize="xs"
+                                                                        color="gray.300"
+                                                                        fontWeight="medium"
+                                                                        isTruncated
+                                                                        maxW="115px"
+                                                                    >
+                                                                        {displayName}
+                                                                    </Text>
+                                                                </HStack>
+
+                                                                {isMemberMuted && (
+                                                                    <Box as={BsMicMuteFill} color="red.400" fontSize="12px" />
+                                                                )}
+                                                            </Flex>
                                                         );
                                                     })}
                                                 </VStack>
@@ -793,10 +834,19 @@ function App() {
                             Membros Online — {inVoice ? (1 + remoteStreams.length) : 1}
                         </Text>
                         <VStack align="stretch" spacing={2}>
-                            <MemberItem name={userName} letter={userEmail.charAt(0).toUpperCase()} bg="blue.600"
-                                status={inVoice ? '🔊 Na Sala de Vídeo' : 'Online'} />
+                            <MemberItem
+                                name={userName}
+                                avatarUrl={userAvatar}
+                                bg="blue.600"
+                                status={inVoice ? '🔊 Na Sala de Vídeo' : 'Online'}
+                            />
                             {remoteStreams.map(rs => (
-                                <MemberItem key={rs.peerId} name={rs.peerId.slice(0, 8)} letter={rs.peerId.charAt(0).toUpperCase()} bg="green.600" status="🔊 Na Sala de Vídeo" />
+                                <MemberItem
+                                    key={rs.peerId}
+                                    name={rs.peerId.slice(0, 8)}
+                                    bg="green.600"
+                                    status="🔊 Na Sala de Vídeo"
+                                />
                             ))}
                         </VStack>
                     </Box>
@@ -893,11 +943,11 @@ function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage }: any
     );
 }
 
-function MemberItem({ name, letter, bg, status }: { name: string; letter: string; bg: string; status: string }) {
+function MemberItem({ name, avatarUrl, bg, status }: { name: string; avatarUrl?: string; bg?: string; status: string }) {
     return (
         <HStack spacing={3} px={2} py={2} borderRadius="md" _hover={{ bg: 'gray.700' }} transition="background 0.15s" cursor="pointer">
-            <Box w="32px" h="32px" borderRadius="full" bg={bg} display="flex" alignItems="center" justifyContent="center" position="relative">
-                <Text fontSize="sm" fontWeight="bold" color="white">{letter}</Text>
+            <Box position="relative">
+                <Avatar size="sm" name={name} src={avatarUrl} bg={bg || 'blue.600'} color="white" />
                 <Box position="absolute" bottom={-0.5} right={-0.5} w="10px" h="10px" borderRadius="full" bg="green.400" border="2px solid" borderColor="gray.800" />
             </Box>
             <Box>
