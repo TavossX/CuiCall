@@ -5,6 +5,8 @@ import {
 } from '@chakra-ui/react';
 import { supabase } from '../supabaseClient';
 import { BsChatDotsFill, BsCheckLg, BsXLg, BsPersonPlusFill, BsPersonCheckFill, BsClockHistory } from 'react-icons/bs';
+import { getAvatarColor } from '../utils/avatarColors';
+import { KuiAvatarIcon } from './KuiAvatar';
 
 export interface FriendProfile {
     id: string;
@@ -336,7 +338,13 @@ export const FriendsView = ({
                                         >
                                             <HStack spacing={3}>
                                                 <Box position="relative">
-                                                    <Avatar size="md" name={friend.profile.username || friend.profile.email} bg="blue.600" />
+                                                    <Avatar
+                                                        size="md"
+                                                        name={friend.profile.username || friend.profile.email}
+                                                        src={friend.profile.avatar_url}
+                                                        bg={getAvatarColor(friend.profile.id)}
+                                                        icon={<KuiAvatarIcon fill={getAvatarColor(friend.profile.id)} />}
+                                                    />
                                                     <Box position="absolute" bottom="-1px" right="-1px" w="12px" h="12px" borderRadius="full" bg="green.400" border="2px solid" borderColor="gray.800" />
                                                 </Box>
                                                 <Box>
@@ -398,7 +406,13 @@ export const FriendsView = ({
                                             border="1px solid" borderColor="gray.650"
                                         >
                                             <HStack spacing={3}>
-                                                <Avatar size="md" name={item.profile.username || item.profile.email} bg="purple.600" />
+                                                <Avatar
+                                                    size="md"
+                                                    name={item.profile.username || item.profile.email}
+                                                    src={item.profile.avatar_url}
+                                                    bg={getAvatarColor(item.profile.id)}
+                                                    icon={<KuiAvatarIcon fill={getAvatarColor(item.profile.id)} />}
+                                                />
                                                 <Box>
                                                     <HStack spacing={2}>
                                                         <Text fontWeight="bold" color="white" fontSize="sm">

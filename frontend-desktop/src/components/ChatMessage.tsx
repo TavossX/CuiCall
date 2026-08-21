@@ -1,6 +1,8 @@
 import React from 'react';
 import { Box, HStack, Text, Avatar } from '@chakra-ui/react';
 import type { ChatMessage } from '../useWebRTC';
+import { getAvatarColor } from '../utils/avatarColors';
+import { KuiAvatarIcon } from './KuiAvatar';
 
 interface ChatMessageProps {
     message: ChatMessage;
@@ -15,11 +17,18 @@ interface ChatMessageProps {
 export const ChatMessageItem = React.memo(
     function ChatMessageItem({ message, isCompact = false }: ChatMessageProps) {
         const senderInitials = message.senderId ? message.senderId.slice(0, 5) : '??';
+        const avatarColor = getAvatarColor(message.senderId);
 
         if (isCompact) {
             return (
                 <HStack spacing={2} align="start" py={1} px={1} _hover={{ bg: 'whiteAlpha.50' }} borderRadius="md" transition="background 0.1s ease">
-                    <Avatar size="2xs" name={senderInitials} bg="teal.600" mt={0.5} />
+                    <Avatar
+                        size="2xs"
+                        name={senderInitials}
+                        bg={avatarColor}
+                        icon={<KuiAvatarIcon fill={avatarColor} />}
+                        mt={0.5}
+                    />
                     <Box flex="1" minW={0}>
                         <HStack spacing={1.5} align="baseline">
                             <Text fontSize="2xs" fontWeight="bold" color="gray.300" isTruncated>
@@ -36,7 +45,13 @@ export const ChatMessageItem = React.memo(
 
         return (
             <HStack spacing={3} align="start" py={1.5} px={2} _hover={{ bg: 'whiteAlpha.50' }} borderRadius="md" transition="background 0.1s ease">
-                <Avatar size="sm" name={senderInitials} bg="teal.600" mt={0.5} />
+                <Avatar
+                    size="sm"
+                    name={senderInitials}
+                    bg={avatarColor}
+                    icon={<KuiAvatarIcon fill={avatarColor} />}
+                    mt={0.5}
+                />
                 <Box flex="1" minW={0}>
                     <HStack spacing={2} align="baseline" mb={0.5}>
                         <Text fontSize="sm" fontWeight="bold" color="gray.200">

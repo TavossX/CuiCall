@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { RemoteStreamInfo } from '../useWebRTC';
 import { BsMicMuteFill } from 'react-icons/bs';
+import { KuiAvatar } from './KuiAvatar';
 import './VideoGrid.css';
 
 interface VideoGridProps {
@@ -46,7 +47,6 @@ function VideoTile({
     }, [entry.stream]);
 
     const showVideo = entry.stream && !entry.isCamOff;
-    const initials = entry.label.slice(0, 2).toUpperCase();
 
     return (
         <div
@@ -83,9 +83,10 @@ function VideoTile({
                 />
             ) : (
                 <div className="video-tile__avatar-container">
-                    <div className={`video-tile__avatar ${isInStrip ? 'video-tile__avatar--small' : ''}`}>
-                        {initials}
-                    </div>
+                    <KuiAvatar
+                        size={isInStrip ? 56 : 88}
+                        userId={entry.id || entry.label}
+                    />
                     {entry.isCamOff && (
                         <span className="video-tile__cam-off-label">Câmera desligada</span>
                     )}

@@ -6,6 +6,8 @@ import { supabase } from '../supabaseClient';
 import { ChatMessageItem } from './ChatMessage';
 import type { ChatMessage } from '../useWebRTC';
 import type { FriendProfile } from './FriendsView';
+import { getAvatarColor } from '../utils/avatarColors';
+import { KuiAvatarIcon } from './KuiAvatar';
 
 interface DMPanelProps {
     currentUserId: string;
@@ -117,7 +119,13 @@ export const DMPanel = ({
                         />
                     </Tooltip>
                     <Box position="relative">
-                        <Avatar size="xs" name={friendDisplayName} bg="blue.600" />
+                        <Avatar
+                            size="xs"
+                            name={friendDisplayName}
+                            src={targetFriend.avatar_url}
+                            bg={getAvatarColor(targetFriend.id)}
+                            icon={<KuiAvatarIcon fill={getAvatarColor(targetFriend.id)} />}
+                        />
                         <Box position="absolute" bottom="-1px" right="-1px" w="7px" h="7px" borderRadius="full" bg="green.400" border="1.5px solid" borderColor="gray.800" />
                     </Box>
                     <Box>
@@ -135,7 +143,14 @@ export const DMPanel = ({
             <Box flex="1" px={4} py={2} position="relative" overflow="hidden">
                 {!loading && (!messages || messages.length === 0) ? (
                     <Flex flex="1" align="center" justify="center" flexDir="column" gap={3} h="100%" color="gray.500">
-                        <Avatar size="xl" name={friendDisplayName} bg="blue.600" opacity={0.6} />
+                        <Avatar
+                            size="xl"
+                            name={friendDisplayName}
+                            src={targetFriend.avatar_url}
+                            bg={getAvatarColor(targetFriend.id)}
+                            icon={<KuiAvatarIcon fill={getAvatarColor(targetFriend.id)} />}
+                            opacity={0.8}
+                        />
                         <Text fontWeight="bold" fontSize="md" color="gray.300">
                             Este é o início da sua conversa direta com @{friendDisplayName}
                         </Text>

@@ -5,6 +5,8 @@ import {
 } from '@chakra-ui/react';
 import { supabase } from '../supabaseClient';
 import { useAutoUpdater } from '../useAutoUpdater';
+import { getAvatarColor } from '../utils/avatarColors';
+import { KuiAvatarIcon } from './KuiAvatar';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -26,6 +28,7 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
     const [selectedVideoInput, setSelectedVideoInput] = useState(localStorage.getItem('cuicall-video-input') || '');
 
     // Aba Perfil
+    const [userId, setUserId] = useState<string | null>(null);
     const [displayName, setDisplayName] = useState('');
     const [avatarUrl, setAvatarUrl] = useState('');
     const [avatarFile, setAvatarFile] = useState<File | null>(null);
@@ -54,6 +57,7 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
         const loadProfile = async () => {
             const { data: { user } } = await supabase.auth.getUser();
             if (user) {
+                setUserId(user.id);
                 const { data } = await supabase
                     .from('profiles')
                     .select('*')
@@ -169,7 +173,13 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                             <TabPanel px={0}>
                                 <VStack spacing={5}>
                                     <Flex align="center" gap={4} w="full">
-                                        <Avatar size="xl" name={displayName || 'Usuário'} src={avatarUrl} bg="blue.600" />
+                                        <Avatar
+                                            size="xl"
+                                            name={displayName || 'Usuário'}
+                                            src={avatarUrl}
+                                            bg={getAvatarColor(userId)}
+                                            icon={<KuiAvatarIcon fill={getAvatarColor(userId)} />}
+                                        />
                                         <VStack align="start" flex={1}>
                                             <FormControl>
                                                 <FormLabel fontSize="sm" color="gray.400">Nome de Exibição</FormLabel>

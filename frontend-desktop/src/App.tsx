@@ -18,6 +18,8 @@ import { VideoGrid } from './components/VideoGrid';
 import { ChatMessageItem } from './components/ChatMessage';
 import { FriendsView, FriendProfile } from './components/FriendsView';
 import { DMPanel } from './components/DMPanel';
+import { getAvatarColor } from './utils/avatarColors';
+import { KuiAvatarIcon } from './components/KuiAvatar';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import {
     BsMicFill, BsMicMuteFill, BsCameraVideoFill, BsCameraVideoOffFill, BsTelephoneXFill,
@@ -551,7 +553,13 @@ function App() {
                                         >
                                             <HStack spacing={2.5} minW={0}>
                                                 <Box position="relative">
-                                                    <Avatar size="xs" name={friendName} bg="blue.600" />
+                                                    <Avatar
+                                                        size="xs"
+                                                        name={friendName}
+                                                        src={friend.avatar_url}
+                                                        bg={getAvatarColor(friend.id)}
+                                                        icon={<KuiAvatarIcon fill={getAvatarColor(friend.id)} />}
+                                                    />
                                                     <Box position="absolute" bottom="-1px" right="-1px" w="7px" h="7px" borderRadius="full" bg="green.400" border="1.5px solid" borderColor="gray.800" />
                                                 </Box>
                                                 <Text fontSize="sm" fontWeight={isSelected ? 'semibold' : 'normal'} isTruncated>
@@ -618,6 +626,7 @@ function App() {
                                                         const displayName = isSelf ? `${userName} (Você)` : (member.userName || member.connectionId.slice(0, 8));
                                                         const avatarSrc = isSelf ? userAvatar : (member.avatarUrl || '');
                                                         const isMemberMuted = isSelf ? isMuted : !!member.isMuted;
+                                                        const memberColor = getAvatarColor(member.userId || member.connectionId);
 
                                                         return (
                                                             <Flex
@@ -637,8 +646,8 @@ function App() {
                                                                             size="xs"
                                                                             name={displayName}
                                                                             src={avatarSrc}
-                                                                            bg="purple.600"
-                                                                            color="white"
+                                                                            bg={memberColor}
+                                                                            icon={<KuiAvatarIcon fill={memberColor} />}
                                                                         />
                                                                         <Box
                                                                             position="absolute"
@@ -682,7 +691,13 @@ function App() {
                 {/* User Footer */}
                 <Box bg="gray.900" px={2} py={2} borderTop="1px solid" borderColor="gray.700">
                     <Flex align="center" gap={2}>
-                        <Avatar size="sm" name={userName} src={userAvatar} bg="blue.600" color="white" />
+                        <Avatar
+                            size="sm"
+                            name={userName}
+                            src={userAvatar}
+                            bg={getAvatarColor(session?.user?.id)}
+                            icon={<KuiAvatarIcon fill={getAvatarColor(session?.user?.id)} />}
+                        />
                         <Box flex="1" minW={0}>
                             <Text fontSize="xs" fontWeight="bold" color="white" isTruncated>{userName}</Text>
                             <Text fontSize="10px" color={inVoice ? 'green.400' : 'gray.500'} isTruncated>
@@ -837,14 +852,14 @@ function App() {
                             <MemberItem
                                 name={userName}
                                 avatarUrl={userAvatar}
-                                bg="blue.600"
+                                userId={session?.user?.id}
                                 status={inVoice ? '🔊 Na Sala de Vídeo' : 'Online'}
                             />
                             {remoteStreams.map(rs => (
                                 <MemberItem
                                     key={rs.peerId}
                                     name={rs.peerId.slice(0, 8)}
-                                    bg="green.600"
+                                    userId={rs.peerId}
                                     status="🔊 Na Sala de Vídeo"
                                 />
                             ))}
@@ -943,11 +958,18 @@ function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage }: any
     );
 }
 
-function MemberItem({ name, avatarUrl, bg, status }: { name: string; avatarUrl?: string; bg?: string; status: string }) {
+function MemberItem({ name, avatarUrl, userId, bg, status }: { name: string; avatarUrl?: string; userId?: string; bg?: string; status: string }) {
+    const avatarBg = bg || getAvatarColor(userId || name);
     return (
         <HStack spacing={3} px={2} py={2} borderRadius="md" _hover={{ bg: 'gray.700' }} transition="background 0.15s" cursor="pointer">
             <Box position="relative">
-                <Avatar size="sm" name={name} src={avatarUrl} bg={bg || 'blue.600'} color="white" />
+                <Avatar
+                    size="sm"
+                    name={name}
+                    src={avatarUrl}
+                    bg={avatarBg}
+                    icon={<KuiAvatarIcon fill={avatarBg} />}
+                />
                 <Box position="absolute" bottom={-0.5} right={-0.5} w="10px" h="10px" borderRadius="full" bg="green.400" border="2px solid" borderColor="gray.800" />
             </Box>
             <Box>
