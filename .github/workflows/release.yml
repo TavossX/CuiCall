@@ -48,4 +48,5 @@ jobs:
           releaseBody: 'Uma nova versão do CuiCall está disponível!'
           releaseDraft: false
           prerelease: false
+          includeUpdaterJson: true
           args: ${{ matrix.args }}
