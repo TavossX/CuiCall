@@ -144,7 +144,6 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                         .from('profiles')
                         .upsert({
                             id: user.id,
-                            email: user.email,
                             username: displayName.trim(),
                             avatar_url: finalAvatarUrl,
                             updated_at: new Date().toISOString()

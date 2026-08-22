@@ -6,6 +6,7 @@ import { Virtuoso } from 'react-virtuoso';
 import { BsArrowLeft, BsSendFill, BsPaperclip } from 'react-icons/bs';
 import { supabase } from '../supabaseClient';
 import { ChatMessageItem } from './ChatMessage';
+import { getCache, setCache, getDMCacheKey } from '../utils/chatCache';
 import type { ChatMessage } from '../useWebRTC';
 import type { FriendProfile } from './FriendsView';
 import { getAvatarColor } from '../utils/avatarColors';
@@ -39,6 +40,15 @@ export const DMPanel = ({
     // Carrega histórico de DMs entre os dois usuários no Supabase
     const fetchDMHistory = useCallback(async () => {
         if (!currentUserId || !targetFriend.id) return;
+        
+        const cacheKey = getDMCacheKey(currentUserId, targetFriend.id);
+        const cached = getCache(cacheKey);
+        if (cached) {
+            loadMessages(targetFriend.id, cached);
+            setLoading(false);
+            return;
+        }
+
         setLoading(true);
 
         try {
@@ -56,6 +66,7 @@ export const DMPanel = ({
                     attachment_url: m.attachment_url || null,
                     created_at: m.created_at,
                 }));
+                setCache(cacheKey, formatted);
                 loadMessages(targetFriend.id, formatted);
             }
         } catch (err) {

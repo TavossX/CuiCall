@@ -12,6 +12,7 @@ import { Auth } from './components/Auth';
 import { SettingsModal } from './components/SettingsModal';
 import { CreateServerModal } from './components/CreateServerModal';
 import { CreateChannelModal } from './components/CreateChannelModal';
+import { getCache, setCache } from './utils/chatCache';
 import { EditServerModal } from './components/EditServerModal';
 import { JoinServerModal } from './components/JoinServerModal';
 import { VideoGrid } from './components/VideoGrid';
@@ -284,6 +285,12 @@ function App() {
 
     // ═══════ Histórico de Mensagens do Supabase ═══════
     const fetchMessages = useCallback(async (channelId: string) => {
+        const cached = getCache(channelId);
+        if (cached) {
+            loadChannelMessages(channelId, cached);
+            return;
+        }
+
         const { data, error } = await supabase
             .from('messages')
             .select('*')
@@ -298,6 +305,7 @@ function App() {
                 id: m.id,
                 created_at: m.created_at,
             }));
+            setCache(channelId, formatted);
             loadChannelMessages(channelId, formatted);
         }
     }, [session?.user?.id, userName, loadChannelMessages]);
@@ -382,7 +390,7 @@ function App() {
 
             if (insertError) throw insertError;
 
-            await sendMessage(userName, textToSend, channelId, attachmentUrl);
+            await sendMessage(insertedMsg?.id, userName, textToSend, channelId, attachmentUrl);
 
             setChannelMessages(prev => ({
                 ...prev,
@@ -408,19 +416,19 @@ function App() {
         const channelId = activeChannel.id;
         setChatInput('');
 
-        const { error } = await supabase.from('messages').insert([
+        const { data: insertedMsg, error } = await supabase.from('messages').insert([
             { channel_id: channelId, user_id: session.user.id, content: textToSend }
-        ]);
+        ]).select().single();
 
         if (error) {
             console.error('Erro ao salvar mensagem no Supabase:', error);
         }
 
-        await sendMessage(userName, textToSend, channelId);
+        await sendMessage(insertedMsg?.id, userName, textToSend, channelId);
 
         setChannelMessages(prev => ({
             ...prev,
-            [channelId]: [...(prev[channelId] || []), { senderId: userName, text: textToSend }]
+            [channelId]: [...(prev[channelId] || []), { id: insertedMsg?.id, senderId: userName, text: textToSend }]
         }));
     };
 

@@ -162,11 +162,7 @@ public class CallHub : Hub
     }
 
     // ═══════ Channel Chat ═══════
-
-    public async Task SendMessage(string userName, string message, string roomId, string? attachmentUrl = null)
-    {
-        await Clients.Group(roomId).SendAsync("ReceiveMessage", userName, message, roomId, attachmentUrl);
-    }
+    // The single SendMessage method is now at line 72.
 
     // ═══════ Disconnect ═══════
 

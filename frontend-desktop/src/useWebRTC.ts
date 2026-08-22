@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as signalR from '@microsoft/signalr';
+import { appendMessageToCache, getDMCacheKey } from './utils/chatCache';
 import { usePushToTalk } from './usePushToTalk';
 
 const STUN_SERVERS: RTCConfiguration = {
@@ -320,29 +321,42 @@ export const useWebRTC = () => {
             hub.on("ReceiveMessage", (senderId: string, text: string, roomId?: string, attachmentUrl?: string) => {
                 const targetChannel = roomId || currentChannelIdRef.current || voiceRoomIdRef.current || 'cuicall-geral';
                 console.log(`[Chat 💬] Canal ${targetChannel} | De: ${senderId} | Anexo: ${attachmentUrl ? 'Sim' : 'Não'}`);
+                
+                const newMsg = {
+                    senderId,
+                    text,
+                    attachment_url: attachmentUrl || null
+                };
+
                 setChannelMessages(prev => ({
                     ...prev,
-                    [targetChannel]: [...(prev[targetChannel] || []), {
-                        senderId,
-                        text,
-                        attachment_url: attachmentUrl || null
-                    }]
+                    [targetChannel]: [...(prev[targetChannel] || []), newMsg]
                 }));
+
+                appendMessageToCache(targetChannel, newMsg);
             });
 
             // ── Direct Messages (DMs) ──
             hub.on("ReceiveDirectMessage", (senderUserId: string, text: string, dmData: any) => {
                 console.log(`[DM 📩] De: ${senderUserId} | Anexo: ${dmData?.attachment_url ? 'Sim' : 'Não'}`);
+                
+                const newDM = {
+                    senderId: dmData?.senderName || senderUserId,
+                    text,
+                    id: dmData?.id,
+                    attachment_url: dmData?.attachment_url || null,
+                    created_at: dmData?.created_at,
+                };
+
                 setDirectMessages(prev => ({
                     ...prev,
-                    [senderUserId]: [...(prev[senderUserId] || []), {
-                        senderId: dmData?.senderName || senderUserId,
-                        text,
-                        id: dmData?.id,
-                        attachment_url: dmData?.attachment_url || null,
-                        created_at: dmData?.created_at,
-                    }]
+                    [senderUserId]: [...(prev[senderUserId] || []), newDM]
                 }));
+
+                if (registeredUserIdRef.current) {
+                    const cacheKey = getDMCacheKey(registeredUserIdRef.current, senderUserId);
+                    appendMessageToCache(cacheKey, newDM);
+                }
 
                 // Dispara evento global de nova DM para o hook de notificações
                 if (typeof window !== 'undefined') {
@@ -623,10 +637,10 @@ export const useWebRTC = () => {
         };
     }, []);
 
-    const sendMessage = useCallback(async (userName: string, text: string, channelId: string, attachmentUrl?: string | null) => {
+    const sendMessage = useCallback(async (messageId: string, userName: string, text: string, channelId: string, attachmentUrl?: string | null) => {
         if ((!text.trim() && !attachmentUrl) || !channelId) return;
         const hub = await getHubConnection();
-        await hub.invoke("SendMessage", userName, text, channelId, attachmentUrl || null);
+        await hub.invoke("SendMessage", messageId, userName, text, channelId, attachmentUrl || null);
     }, [getHubConnection]);
 
     const loadChannelMessages = useCallback((channelId: string, msgs: ChatMessage[]) => {
