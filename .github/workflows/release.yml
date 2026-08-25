@@ -38,14 +38,31 @@ jobs:
         working-directory: ./frontend-desktop
         run: npm install
 
+      - name: setup signing keys
+        shell: bash
+        run: |
+          KEY="${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+          if [ -z "$KEY" ]; then
+            KEY="${{ secrets.TAURI_PRIVATE_KEY }}"
+          fi
+          echo "TAURI_SIGNING_PRIVATE_KEY<<EOF" >> $GITHUB_ENV
+          echo "$KEY" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "TAURI_PRIVATE_KEY<<EOF" >> $GITHUB_ENV
+          echo "$KEY" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          PWD="${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}"
+          if [ -z "$PWD" ]; then
+            PWD="${{ secrets.TAURI_KEY_PASSWORD }}"
+          fi
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$PWD" >> $GITHUB_ENV
+          echo "TAURI_KEY_PASSWORD=$PWD" >> $GITHUB_ENV
+
       - name: build tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || secrets.TAURI_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || secrets.TAURI_KEY_PASSWORD }}
-          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || secrets.TAURI_PRIVATE_KEY }}
-          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || secrets.TAURI_KEY_PASSWORD }}
         with:
           projectPath: './frontend-desktop'
           tagName: app-v__VERSION__

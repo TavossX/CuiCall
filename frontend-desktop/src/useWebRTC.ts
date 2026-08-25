@@ -10,6 +10,12 @@ const STUN_SERVERS: RTCConfiguration = {
     ],
 };
 
+const DEFAULT_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
+    width: { ideal: 1280, max: 1280 },
+    height: { ideal: 720, max: 720 },
+    frameRate: { ideal: 30, max: 30 },
+};
+
 export interface ChatMessage {
     senderId: string;
     text: string;
@@ -474,8 +480,13 @@ export const useWebRTC = () => {
         audioDeviceId?: string,
         profile?: { userName?: string; avatarUrl?: string }
     ) => {
+        const videoConstraints: MediaTrackConstraints = {
+            ...DEFAULT_VIDEO_CONSTRAINTS,
+            ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
+        };
+
         const constraints: MediaStreamConstraints = {
-            video: videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true,
+            video: videoConstraints,
             audio: audioDeviceId ? { deviceId: { exact: audioDeviceId } } : true,
         };
 
@@ -556,7 +567,10 @@ export const useWebRTC = () => {
             localStreamRef.current = audioOnly;
             setIsCamOff(true);
         } else {
-            const newVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const newVideoStream = await navigator.mediaDevices.getUserMedia({
+                video: DEFAULT_VIDEO_CONSTRAINTS,
+                audio: false
+            });
             const newVideoTrack = newVideoStream.getVideoTracks()[0];
 
             peersRef.current.forEach((peer) => {
@@ -596,7 +610,10 @@ export const useWebRTC = () => {
     }, [isMuted]);
 
     const shareScreen = useCallback(async () => {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: DEFAULT_VIDEO_CONSTRAINTS,
+            audio: true
+        });
         const screenTrack = screenStream.getVideoTracks()[0];
 
         peersRef.current.forEach((peer) => {
@@ -618,7 +635,10 @@ export const useWebRTC = () => {
             const currentRoom = voiceRoomIdRef.current;
             if (currentRoom) {
                 try {
-                    const camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    const camStream = await navigator.mediaDevices.getUserMedia({
+                        video: DEFAULT_VIDEO_CONSTRAINTS,
+                        audio: true
+                    });
                     const camVideoTrack = camStream.getVideoTracks()[0];
 
                     peersRef.current.forEach((peer) => {
