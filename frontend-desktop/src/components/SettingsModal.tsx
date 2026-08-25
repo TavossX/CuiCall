@@ -332,7 +332,7 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                                     <Box p={4} borderRadius="lg" bg="gray.900" border="1px solid" borderColor="gray.700">
                                         <Flex justify="space-between" align="center" mb={2}>
                                             <Text fontSize="sm" fontWeight="bold" color="white">CuiCall Desktop</Text>
-                                            <Badge colorScheme="blue" borderRadius="full" px={2}>v0.1.0</Badge>
+                                            <Badge colorScheme="blue" borderRadius="full" px={2}>v0.3.1</Badge>
                                         </Flex>
                                         <Text fontSize="xs" color="gray.400">
                                             O CuiCall verifica e instala atualizações automaticamente sempre que uma nova versão é lançada.
