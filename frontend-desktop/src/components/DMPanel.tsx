@@ -11,6 +11,7 @@ import type { ChatMessage } from '../useWebRTC';
 import type { FriendProfile } from './FriendsView';
 import { getAvatarColor } from '../utils/avatarColors';
 import { KuiAvatarIcon } from './KuiAvatar';
+import { TypingIndicator } from './TypingIndicator';
 
 interface DMPanelProps {
     currentUserId: string;
@@ -20,6 +21,8 @@ interface DMPanelProps {
     onSendMessage: (receiverId: string, text: string, data?: any) => void;
     onBack: () => void;
     loadMessages: (partnerId: string, msgs: ChatMessage[]) => void;
+    isPartnerTyping?: boolean;
+    onSendTyping?: () => void;
 }
 
 export const DMPanel = ({
@@ -30,11 +33,14 @@ export const DMPanel = ({
     onSendMessage,
     onBack,
     loadMessages,
+    isPartnerTyping = false,
+    onSendTyping,
 }: DMPanelProps) => {
     const [inputText, setInputText] = useState('');
     const [loading, setLoading] = useState(true);
     const [isUploading, setIsUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const lastTypingSentRef = useRef<number>(0);
     const toast = useToast();
 
     // Carrega histórico de DMs entre os dois usuários no Supabase
@@ -59,13 +65,28 @@ export const DMPanel = ({
                 .order('created_at', { ascending: true });
 
             if (!error && data) {
-                const formatted: ChatMessage[] = data.map((m: any) => ({
-                    id: m.id,
-                    senderId: m.sender_id === currentUserId ? currentUserName : (targetFriend.username || targetFriend.email.split('@')[0]),
-                    text: m.text || '',
-                    attachment_url: m.attachment_url || null,
-                    created_at: m.created_at,
-                }));
+                const partnerName = targetFriend.display_name || targetFriend.username || targetFriend.email?.split('@')[0] || targetFriend.id.slice(0, 8);
+                const formatted: ChatMessage[] = data.map((m: any) => {
+                    let text = m.text || m.content || '';
+                    let attachment = m.attachment_url || null;
+
+                    // Extrai URL de imagem caso o schema armazene o anexo dentro do texto por fallback
+                    if (!attachment && text) {
+                        const urlMatch = text.match(/(https?:\/\/[^\s]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp)(\?[^\s]*)?)/i);
+                        if (urlMatch) {
+                            attachment = urlMatch[0];
+                            text = text.replace(urlMatch[0], '').trim();
+                        }
+                    }
+
+                    return {
+                        id: m.id,
+                        senderId: m.sender_id === currentUserId ? currentUserName : partnerName,
+                        text,
+                        attachment_url: attachment,
+                        created_at: m.created_at,
+                    };
+                });
                 setCache(cacheKey, formatted);
                 loadMessages(targetFriend.id, formatted);
             }
@@ -74,7 +95,7 @@ export const DMPanel = ({
         } finally {
             setLoading(false);
         }
-    }, [currentUserId, targetFriend, currentUserName, loadMessages]);
+    }, [currentUserId, targetFriend.id, targetFriend.username, targetFriend.display_name, targetFriend.email, currentUserName, loadMessages]);
 
     useEffect(() => {
         fetchDMHistory();
@@ -104,22 +125,32 @@ export const DMPanel = ({
             const fileExt = file.name.split('.').pop() || 'png';
             const fileName = `dm-${currentUserId}-${Date.now()}.${fileExt}`;
 
-            const { error: uploadError } = await supabase.storage
-                .from('chat_attachments')
+            let bucketName = 'chat_attachments';
+            let { error: uploadError } = await supabase.storage
+                .from(bucketName)
                 .upload(fileName, file, { upsert: true });
 
+            // Se o bucket chat_attachments não existir, tenta o bucket images
+            if (uploadError && uploadError.message?.toLowerCase().includes('bucket not found')) {
+                bucketName = 'images';
+                const retryUpload = await supabase.storage
+                    .from(bucketName)
+                    .upload(fileName, file, { upsert: true });
+                uploadError = retryUpload.error;
+            }
+
             if (uploadError) {
-                console.error('Erro no upload para chat_attachments:', uploadError);
+                console.error('Erro no upload para storage:', uploadError);
                 toast({ title: 'Erro no envio do anexo', description: uploadError.message, status: 'error' });
                 return;
             }
 
-            const { data } = supabase.storage.from('chat_attachments').getPublicUrl(fileName);
+            const { data } = supabase.storage.from(bucketName).getPublicUrl(fileName);
             const attachmentUrl = data.publicUrl;
 
             // Salva no banco com o anexo
             const textContent = inputText.trim();
-            const { data: insertedMsg, error: insertError } = await supabase
+            let { data: insertedMsg, error: insertError } = await supabase
                 .from('direct_messages')
                 .insert([{
                     sender_id: currentUserId,
@@ -129,6 +160,22 @@ export const DMPanel = ({
                 }])
                 .select()
                 .single();
+
+            // Fallback se a coluna attachment_url não existir no schema da tabela direct_messages
+            if (insertError && (insertError.message.includes('attachment_url') || insertError.message.includes('column'))) {
+                const fallbackText = textContent ? `${textContent}\n${attachmentUrl}` : attachmentUrl;
+                const retry = await supabase
+                    .from('direct_messages')
+                    .insert([{
+                        sender_id: currentUserId,
+                        receiver_id: targetFriend.id,
+                        text: fallbackText
+                    }])
+                    .select()
+                    .single();
+                insertedMsg = retry.data;
+                insertError = retry.error;
+            }
 
             if (insertError) throw insertError;
 
@@ -262,11 +309,18 @@ export const DMPanel = ({
                         followOutput="smooth"
                         style={{ height: '100%', width: '100%' }}
                         itemContent={(index, msg) => (
-                            <ChatMessageItem key={index} message={msg} index={index} />
+                            <ChatMessageItem key={index} message={msg} index={index} currentUserName={currentUserName} />
                         )}
                     />
                 )}
             </Box>
+
+            {/* Indicador Visual de Digitação */}
+            {isPartnerTyping && (
+                <Box px={4} py={1} bg="gray.800" borderTop="1px solid" borderColor="gray.700">
+                    <TypingIndicator partnerName={friendDisplayName} isDM={true} />
+                </Box>
+            )}
 
             {/* Input de Mensagem */}
             <Box px={4} py={3} borderTop="1px solid" borderColor="gray.600" bg="gray.750">
@@ -294,7 +348,19 @@ export const DMPanel = ({
                         placeholder={isUploading ? "Enviando imagem..." : `Conversar com @${friendDisplayName}`}
                         value={inputText}
                         onChange={(e) => setInputText(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                                handleSend();
+                                return;
+                            }
+                            if (onSendTyping) {
+                                const now = Date.now();
+                                if (now - lastTypingSentRef.current > 3000) {
+                                    lastTypingSentRef.current = now;
+                                    onSendTyping();
+                                }
+                            }
+                        }}
                         bg="gray.800"
                         border="none"
                         size="md"

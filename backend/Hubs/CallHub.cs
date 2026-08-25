@@ -23,6 +23,26 @@ public class CallHub : Hub
     // Maps SignalR ConnectionId → Supabase/DB UserId (for reverse lookup on disconnect)
     private static readonly ConcurrentDictionary<string, string> ConnectionUsers = new();
 
+    // Maps SignalR ConnectionId → Last Heartbeat/Ping UTC timestamp
+    internal static readonly ConcurrentDictionary<string, DateTime> ConnectionLastPing = new();
+
+    // ═══════ Heartbeat / Ping ═══════
+
+    public override Task OnConnectedAsync()
+    {
+        ConnectionLastPing[Context.ConnectionId] = DateTime.UtcNow;
+        return base.OnConnectedAsync();
+    }
+
+    /// <summary>
+    /// Heartbeat Ping from client. Updates connection liveness timestamp.
+    /// </summary>
+    public Task Ping()
+    {
+        ConnectionLastPing[Context.ConnectionId] = DateTime.UtcNow;
+        return Task.CompletedTask;
+    }
+
     // ═══════ User Registration ═══════
 
     /// <summary>
@@ -31,6 +51,7 @@ public class CallHub : Hub
     /// </summary>
     public Task RegisterUser(string userId)
     {
+        ConnectionLastPing[Context.ConnectionId] = DateTime.UtcNow;
         if (!string.IsNullOrWhiteSpace(userId))
         {
             var connId = Context.ConnectionId;
@@ -69,9 +90,30 @@ public class CallHub : Hub
         }
     }
 
+    /// <summary>
+    /// Notifies a target user in real-time that the other user is typing in a DM.
+    /// </summary>
+    public async Task SendDMTyping(string receiverId, string senderName)
+    {
+        var senderUserId = ConnectionUsers.TryGetValue(Context.ConnectionId, out var uId) ? uId : Context.ConnectionId;
+
+        if (UserConnections.TryGetValue(receiverId, out var targetConnId))
+        {
+            await Clients.Client(targetConnId).SendAsync("UserDMTyping", senderUserId, senderName);
+        }
+    }
+
     public async Task SendMessage(string messageId, string userName, string message, string roomId, string? attachmentUrl = null)
     {
         await Clients.Group(roomId).SendAsync("ReceiveMessage", messageId, userName, message, roomId, attachmentUrl);
+    }
+
+    /// <summary>
+    /// Broadcasts typing indicator to other members in a text/voice channel.
+    /// </summary>
+    public async Task SendTyping(string roomId, string userName)
+    {
+        await Clients.GroupExcept(roomId, Context.ConnectionId).SendAsync("UserTyping", roomId, userName);
     }
 
     public async Task AddReaction(string messageId, string emoji, string userName, string roomId)
@@ -169,6 +211,7 @@ public class CallHub : Hub
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var connId = Context.ConnectionId;
+        ConnectionLastPing.TryRemove(connId, out _);
 
         // Clean up UserConnections mapping
         if (ConnectionUsers.TryRemove(connId, out var userId))
@@ -189,6 +232,73 @@ public class CallHub : Hub
         }
 
         await base.OnDisconnectedAsync(exception);
+    }
+
+    /// <summary>
+    /// Varredura e desconexão de clientes fantasmas que não enviaram Ping nos últimos 10 segundos.
+    /// </summary>
+    public static async Task SweepDeadConnectionsAsync(IHubContext<CallHub> hubContext, TimeSpan timeout, ILogger logger)
+    {
+        var cutoff = DateTime.UtcNow - timeout;
+        var deadConnections = ConnectionLastPing
+            .Where(kv => kv.Value < cutoff)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        foreach (var connId in deadConnections)
+        {
+            logger.LogWarning("[Heartbeat ⚠️] Conexão fantasma desconectada por inatividade (> {Timeout}s): {ConnectionId}", timeout.TotalSeconds, connId);
+            ConnectionLastPing.TryRemove(connId, out _);
+
+            // Clean up UserConnections mapping
+            if (ConnectionUsers.TryRemove(connId, out var userId))
+            {
+                if (UserConnections.TryGetValue(userId, out var mappedConnId) && mappedConnId == connId)
+                {
+                    UserConnections.TryRemove(userId, out _);
+                }
+            }
+
+            // Clean up Room and Voice tracking
+            if (ConnectionRooms.TryRemove(connId, out var rooms))
+            {
+                foreach (var roomId in rooms.Keys)
+                {
+                    VoiceMemberInfo? removedMember = null;
+                    if (RoomVoiceMembers.TryGetValue(roomId, out var voiceMembers))
+                    {
+                        voiceMembers.TryRemove(connId, out removedMember);
+                        if (voiceMembers.IsEmpty)
+                        {
+                            RoomVoiceMembers.TryRemove(roomId, out _);
+                        }
+                    }
+
+                    if (RoomMembers.TryGetValue(roomId, out var members))
+                    {
+                        members.TryRemove(connId, out _);
+                        if (members.IsEmpty)
+                        {
+                            RoomMembers.TryRemove(roomId, out _);
+                        }
+                    }
+
+                    // Notifica os demais membros da sala
+                    await hubContext.Clients.Group(roomId).SendAsync("UserLeft", connId, roomId);
+
+                    // Atualiza presença global de voz
+                    var memberToBroadcast = removedMember ?? new VoiceMemberInfo(connId, null, null, null, false);
+                    await hubContext.Clients.All.SendAsync("VoiceStateUpdated", roomId, memberToBroadcast, "left");
+                }
+            }
+
+            // Opcional: Notifica o cliente morto caso ainda esteja conectado
+            try
+            {
+                await hubContext.Clients.Client(connId).SendAsync("ForceDisconnect", "Heartbeat timeout");
+            }
+            catch {}
+        }
     }
 
     // ═══════ Voice State Snapshot ═══════

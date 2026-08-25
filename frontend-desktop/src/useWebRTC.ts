@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as signalR from '@microsoft/signalr';
 import { appendMessageToCache, getDMCacheKey } from './utils/chatCache';
 import { usePushToTalk } from './usePushToTalk';
+import { createProcessedAudioStream, ProcessedAudioResult } from './utils/audioProcessor';
 
 const STUN_SERVERS: RTCConfiguration = {
     iceServers: [
@@ -136,8 +137,65 @@ export const useWebRTC = () => {
     const [channelMessages, setChannelMessages] = useState<Record<string, ChatMessage[]>>({});
     const [directMessages, setDirectMessages] = useState<Record<string, ChatMessage[]>>({});
     const [voicePresence, setVoicePresence] = useState<Record<string, VoiceMemberInfo[]>>({});
+    const [typingUsers, setTypingUsers] = useState<Record<string, Record<string, number>>>({});
+    const [dmTypingUsers, setDmTypingUsers] = useState<Record<string, number>>({});
 
-    const { isPttActive, pttEnabled, pttShortcut, setPttEnabled, setPttShortcut } = usePushToTalk();
+    const { isPTTActive, isPTTEnabled, pttShortcut, updatePTTEnabled, updatePTTShortcut, releaseDelay, updateReleaseDelay } = usePushToTalk();
+
+    // ── Limpeza periódica de usuários digitando (> 3 segundos) ──
+    useEffect(() => {
+        const interval = setInterval(() => {
+            const now = Date.now();
+            setTypingUsers(prev => {
+                let changed = false;
+                const updated: Record<string, Record<string, number>> = {};
+                for (const [roomId, users] of Object.entries(prev)) {
+                    const activeUsers: Record<string, number> = {};
+                    for (const [user, expiry] of Object.entries(users)) {
+                        if (now < expiry) {
+                            activeUsers[user] = expiry;
+                        } else {
+                            changed = true;
+                        }
+                    }
+                    if (Object.keys(activeUsers).length > 0) {
+                        updated[roomId] = activeUsers;
+                    } else if (Object.keys(users).length > 0) {
+                        changed = true;
+                    }
+                }
+                return changed ? updated : prev;
+            });
+
+            setDmTypingUsers(prev => {
+                let changed = false;
+                const updated: Record<string, number> = {};
+                for (const [partnerId, expiry] of Object.entries(prev)) {
+                    if (now < expiry) {
+                        updated[partnerId] = expiry;
+                    } else {
+                        changed = true;
+                    }
+                }
+                return changed ? updated : prev;
+            });
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, []);
+
+    // ── Heartbeat / Ping a cada 5 segundos para manter presença ativa ──
+    useEffect(() => {
+        const pingInterval = setInterval(() => {
+            if (connectionRef.current && connectionRef.current.state === signalR.HubConnectionState.Connected) {
+                connectionRef.current.invoke("Ping").catch((err) => {
+                    console.debug("[SignalR Heartbeat] Falha temporária no ping:", err);
+                });
+            }
+        }, 5000);
+
+        return () => clearInterval(pingInterval);
+    }, []);
 
     const connectionRef = useRef<signalR.HubConnection | null>(null);
     const peersRef = useRef(new Map<string, RTCPeerConnection>());
@@ -148,12 +206,41 @@ export const useWebRTC = () => {
     const isMutedRef = useRef(false);
     const registeredUserIdRef = useRef<string | null>(null);
 
+    // ── Supressão de Ruído e Noise Gate ──
+    const [isNoiseSuppressionEnabled, setIsNoiseSuppressionEnabled] = useState<boolean>(() => {
+        const stored = localStorage.getItem('cuicall-noise-suppression');
+        return stored === null ? true : stored === 'true';
+    });
+    const [noiseGateThreshold, setNoiseGateThreshold] = useState<number>(() => {
+        const stored = localStorage.getItem('cuicall-noise-threshold');
+        return stored ? parseInt(stored, 10) : -48;
+    });
+    const audioProcessorRef = useRef<ProcessedAudioResult | null>(null);
+
+    // Sincroniza alterações vindas do modal de configurações
+    useEffect(() => {
+        const handleNoiseConfig = (e: any) => {
+            if (e.detail) {
+                if (typeof e.detail.noiseSuppressionEnabled === 'boolean') {
+                    setIsNoiseSuppressionEnabled(e.detail.noiseSuppressionEnabled);
+                    audioProcessorRef.current?.setNoiseSuppressionEnabled(e.detail.noiseSuppressionEnabled);
+                }
+                if (typeof e.detail.noiseThreshold === 'number') {
+                    setNoiseGateThreshold(e.detail.noiseThreshold);
+                    audioProcessorRef.current?.setThresholdDb(e.detail.noiseThreshold);
+                }
+            }
+        };
+        window.addEventListener('cuicall:noiseConfigChanged', handleNoiseConfig);
+        return () => window.removeEventListener('cuicall:noiseConfigChanged', handleNoiseConfig);
+    }, []);
+
     // ── Sincronização da trilha de áudio do microfone com Push-to-Talk ──
     useEffect(() => {
         if (!inVoice || !localStreamRef.current) return;
 
-        if (pttEnabled) {
-            const shouldTransmitAudio = isPttActive;
+        if (isPTTEnabled) {
+            const shouldTransmitAudio = isPTTActive;
             localStreamRef.current.getAudioTracks().forEach(track => {
                 track.enabled = shouldTransmitAudio;
             });
@@ -168,7 +255,7 @@ export const useWebRTC = () => {
                 });
             }
         }
-    }, [inVoice, pttEnabled, isPttActive]);
+    }, [inVoice, isPTTEnabled, isPTTActive]);
 
     // Keep refs in sync
     useEffect(() => {
@@ -421,6 +508,13 @@ export const useWebRTC = () => {
                 }));
 
                 appendMessageToCache(targetChannel, newMsg);
+
+                // Dispara evento global de nova mensagem de canal para detecção de menções e notificações
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('cuicall:newChannelMessage', {
+                        detail: { senderId, text, channelId: targetChannel, attachmentUrl }
+                    }));
+                }
             });
 
             // ── Direct Messages (DMs) ──
@@ -470,6 +564,29 @@ export const useWebRTC = () => {
                         detail: { accepterUserId, acceptData }
                     }));
                 }
+            });
+
+            // ── Indicador de Digitação em Canais e DMs ──
+            hub.on("UserTyping", (roomId: string, typingUserName: string) => {
+                setTypingUsers(prev => ({
+                    ...prev,
+                    [roomId]: {
+                        ...(prev[roomId] || {}),
+                        [typingUserName]: Date.now() + 3000
+                    }
+                }));
+            });
+
+            hub.on("UserDMTyping", (senderUserId: string, _senderName: string) => {
+                setDmTypingUsers(prev => ({
+                    ...prev,
+                    [senderUserId]: Date.now() + 3000
+                }));
+            });
+
+            hub.on("ForceDisconnect", (reason: string) => {
+                console.warn(`[SignalR 🔴] Conexão forçada a desconectar pelo servidor: ${reason}`);
+                stopAllMedia();
             });
 
             connectionRef.current = hub;
@@ -562,7 +679,22 @@ export const useWebRTC = () => {
         profile?: { userName?: string; avatarUrl?: string }
     ) => {
         try {
-            const stream = await acquireCameraStream(videoDeviceId, audioDeviceId);
+            const rawStream = await acquireCameraStream(videoDeviceId, audioDeviceId);
+
+            // Fecha processador anterior se houver
+            if (audioProcessorRef.current) {
+                audioProcessorRef.current.close();
+                audioProcessorRef.current = null;
+            }
+
+            // Intercepta e processa através da Web Audio API (High-Pass + Noise Gate)
+            const processor = createProcessedAudioStream(rawStream, {
+                enabled: isNoiseSuppressionEnabled,
+                thresholdDb: noiseGateThreshold,
+            });
+            audioProcessorRef.current = processor;
+            const stream = processor.processedStream;
+
             setLocalStream(stream);
             localStreamRef.current = stream;
 
@@ -570,7 +702,7 @@ export const useWebRTC = () => {
             setIsCamOff(!hasVideo);
 
             // Se o modo Push-To-Talk estiver ativado, o áudio inicia mutado até a tecla ser pressionada
-            const initialMuteState = pttEnabled;
+            const initialMuteState = isPTTEnabled;
             stream.getAudioTracks().forEach(track => {
                 track.enabled = !initialMuteState;
             });
@@ -594,9 +726,14 @@ export const useWebRTC = () => {
         } catch (err) {
             console.error("[WebRTC] Erro ao entrar no canal de voz:", err);
         }
-    }, [getHubConnection, pttEnabled]);
+    }, [getHubConnection, isPTTEnabled, isNoiseSuppressionEnabled, noiseGateThreshold]);
 
     const leaveVoice = useCallback(async () => {
+        if (audioProcessorRef.current) {
+            audioProcessorRef.current.close();
+            audioProcessorRef.current = null;
+        }
+
         localStreamRef.current?.getTracks().forEach(track => track.stop());
         setLocalStream(null);
         localStreamRef.current = null;
@@ -701,6 +838,32 @@ export const useWebRTC = () => {
         }
     }, [isMuted]);
 
+    // Atualiza o estado dos tracks de áudio com base no Push-to-Talk
+    const updatePTTState = useCallback((isTalking: boolean, isPTTEnabled: boolean) => {
+        const stream = localStreamRef.current;
+        if (!stream) return;
+
+        if (isPTTEnabled) {
+            const shouldTransmit = isTalking && !isMutedRef.current;
+            stream.getAudioTracks().forEach(track => {
+                track.enabled = shouldTransmit;
+            });
+
+            if (voiceRoomIdRef.current && connectionRef.current?.state === signalR.HubConnectionState.Connected) {
+                connectionRef.current.invoke("UpdateVoiceMuteState", voiceRoomIdRef.current, !shouldTransmit).catch(() => {});
+            }
+        } else {
+            stream.getAudioTracks().forEach(track => {
+                track.enabled = !isMutedRef.current;
+            });
+        }
+    }, []);
+
+    // Sincroniza estado de transmissão de áudio sempre que o PTT ativar/desativar
+    useEffect(() => {
+        updatePTTState(isPTTActive, isPTTEnabled);
+    }, [isPTTActive, isPTTEnabled, updatePTTState]);
+
     const shareScreen = useCallback(async () => {
         try {
             const screenStream = await acquireScreenStream();
@@ -772,6 +935,26 @@ export const useWebRTC = () => {
         await hub.invoke("SendMessage", messageId, userName, text, channelId, attachmentUrl || null);
     }, [getHubConnection]);
 
+    const sendTyping = useCallback(async (roomId: string, userName: string) => {
+        if (!roomId || !userName) return;
+        try {
+            const hub = await getHubConnection();
+            await hub.invoke("SendTyping", roomId, userName);
+        } catch (err) {
+            console.warn("[SignalR] Erro ao enviar indicador de digitação:", err);
+        }
+    }, [getHubConnection]);
+
+    const sendDMTyping = useCallback(async (receiverUserId: string, senderName: string) => {
+        if (!receiverUserId || !senderName) return;
+        try {
+            const hub = await getHubConnection();
+            await hub.invoke("SendDMTyping", receiverUserId, senderName);
+        } catch (err) {
+            console.warn("[SignalR] Erro ao enviar indicador de digitação DM:", err);
+        }
+    }, [getHubConnection]);
+
     const loadChannelMessages = useCallback((channelId: string, msgs: ChatMessage[]) => {
         setChannelMessages(prev => ({
             ...prev,
@@ -779,7 +962,31 @@ export const useWebRTC = () => {
         }));
     }, []);
 
+    const toggleNoiseSuppression = useCallback((enabled?: boolean) => {
+        setIsNoiseSuppressionEnabled(prev => {
+            const next = enabled !== undefined ? enabled : !prev;
+            localStorage.setItem('cuicall-noise-suppression', String(next));
+            if (audioProcessorRef.current) {
+                audioProcessorRef.current.setNoiseSuppressionEnabled(next);
+            }
+            return next;
+        });
+    }, []);
+
+    const updateNoiseGateThreshold = useCallback((threshold: number) => {
+        setNoiseGateThreshold(threshold);
+        localStorage.setItem('cuicall-noise-threshold', String(threshold));
+        if (audioProcessorRef.current) {
+            audioProcessorRef.current.setThresholdDb(threshold);
+        }
+    }, []);
+
     const stopAllMedia = useCallback(() => {
+        if (audioProcessorRef.current) {
+            audioProcessorRef.current.close();
+            audioProcessorRef.current = null;
+        }
+
         localStreamRef.current?.getTracks().forEach(track => track.stop());
         setLocalStream(null);
         localStreamRef.current = null;
@@ -807,14 +1014,25 @@ export const useWebRTC = () => {
         isCamOff,
         isMuted,
         isScreenSharing,
-        isPttActive,
-        pttEnabled,
+        isPTTActive,
+        isPTTEnabled,
         pttShortcut,
-        setPttEnabled,
-        setPttShortcut,
+        releaseDelay,
+        updatePTTEnabled,
+        updatePTTShortcut,
+        updateReleaseDelay,
+        updatePTTState,
+        isNoiseSuppressionEnabled,
+        noiseGateThreshold,
+        toggleNoiseSuppression,
+        updateNoiseGateThreshold,
         channelMessages,
         directMessages,
         voicePresence,
+        typingUsers,
+        dmTypingUsers,
+        sendTyping,
+        sendDMTyping,
         setChannelMessages,
         setDirectMessages,
         loadChannelMessages,

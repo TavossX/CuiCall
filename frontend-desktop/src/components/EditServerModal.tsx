@@ -50,14 +50,28 @@ export const EditServerModal = ({ isOpen, onClose, server, onServerUpdated }: Ed
             setIconUrl(data.publicUrl);
         }
 
-        const { error } = await supabase
+        const updatePayload: Record<string, any> = { 
+            name: name.trim(), 
+            icon_url: finalIconUrl.trim() 
+        };
+        if (description.trim()) {
+            updatePayload.description = description.trim();
+        }
+
+        let { error } = await supabase
             .from('servers')
-            .update({ 
-                name: name.trim(), 
-                description: description.trim(), 
-                icon_url: finalIconUrl.trim() 
-            })
+            .update(updatePayload)
             .eq('id', server.id);
+
+        // Fallback: se a coluna description não existir na tabela servers
+        if (error && (error.message.includes('description') || error.message.includes('column'))) {
+            delete updatePayload.description;
+            const retry = await supabase
+                .from('servers')
+                .update(updatePayload)
+                .eq('id', server.id);
+            error = retry.error;
+        }
 
         setIsLoading(false);
 

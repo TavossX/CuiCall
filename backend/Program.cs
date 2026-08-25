@@ -1,4 +1,5 @@
 using backend.Hubs;
+using backend.Services;
 
 // Desativa inotify FileSystemWatcher para rodar em containers compartilhados no Render/Linux
 Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
@@ -7,6 +8,7 @@ Environment.SetEnvironmentVariable("DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE", "
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSignalR();
+builder.Services.AddHostedService<HeartbeatSweepService>();
 
 builder.Services.AddCors(options =>
 {

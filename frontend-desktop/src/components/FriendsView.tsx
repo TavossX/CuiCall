@@ -144,17 +144,54 @@ export const FriendsView = ({
 
         setSearchLoading(true);
         try {
-            // Busca o perfil pelo e-mail ou pelo id
-            const { data: targetProfile, error: searchErr } = await supabase
-                .from('profiles')
-                .select('*')
-                .or(`email.ilike.${query},id.eq.${query}`)
-                .maybeSingle();
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query);
+            let targetProfile: any = null;
+            let searchErr: any = null;
+
+            if (isUuid) {
+                const res = await supabase
+                    .from('profiles')
+                    .select('*')
+                    .eq('id', query)
+                    .maybeSingle();
+                targetProfile = res.data;
+                searchErr = res.error;
+            } else {
+                // Busca por e-mail
+                const resEmail = await supabase
+                    .from('profiles')
+                    .select('*')
+                    .ilike('email', query)
+                    .maybeSingle();
+                
+                targetProfile = resEmail.data;
+                searchErr = resEmail.error;
+
+                // Se não encontrar por e-mail exato, busca por display_name ou username
+                if (!targetProfile && !searchErr) {
+                    const resDisplay = await supabase
+                        .from('profiles')
+                        .select('*')
+                        .ilike('display_name', query)
+                        .maybeSingle();
+
+                    if (!resDisplay.error && resDisplay.data) {
+                        targetProfile = resDisplay.data;
+                    } else {
+                        const resUser = await supabase
+                            .from('profiles')
+                            .select('*')
+                            .ilike('username', query)
+                            .maybeSingle();
+                        targetProfile = resUser.data;
+                    }
+                }
+            }
 
             if (searchErr || !targetProfile) {
                 toast({
                     title: 'Usuário não encontrado',
-                    description: 'Verifique se o e-mail ou ID foi digitado corretamente.',
+                    description: 'Verifique se o e-mail, nome de exibição ou ID foi digitado corretamente.',
                     status: 'error',
                     duration: 3000,
                     isClosable: true,

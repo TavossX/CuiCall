@@ -8,6 +8,52 @@ interface ChatMessageProps {
     message: ChatMessage;
     index?: number;
     isCompact?: boolean;
+    currentUserName?: string;
+}
+
+/**
+ * Regex robusta para capturar menções no formato @usuario ou @todos/@everyone/@here
+ * Suporta caracteres alfanuméricos, acentos, underlines e hífens com isolamento adequado.
+ */
+const MENTION_REGEX = /(@[a-zA-Z0-9_\-À-ÿ]+)/g;
+
+/**
+ * Renderiza o texto da mensagem formatando menções (@) como pílulas (badges) destacadas.
+ */
+function renderMessageText(text: string, currentUserName?: string) {
+    if (!text) return null;
+    const parts = text.split(MENTION_REGEX);
+
+    return parts.map((part, idx) => {
+        if (part.startsWith('@')) {
+            const mentionTarget = part.slice(1);
+            const isSelf = currentUserName && mentionTarget.toLowerCase() === currentUserName.toLowerCase();
+            const isBroad = ['todos', 'everyone', 'here', 'aqui'].includes(mentionTarget.toLowerCase());
+
+            return (
+                <Box
+                    as="span"
+                    key={idx}
+                    px={1.5}
+                    py={0.5}
+                    mx={0.5}
+                    borderRadius="md"
+                    fontSize="xs"
+                    fontWeight="semibold"
+                    bg={isSelf ? 'yellow.900' : isBroad ? 'purple.900' : 'blue.900'}
+                    color={isSelf ? 'yellow.200' : isBroad ? 'purple.200' : 'blue.200'}
+                    border="1px solid"
+                    borderColor={isSelf ? 'yellow.600' : isBroad ? 'purple.600' : 'blue.600'}
+                    display="inline-block"
+                    lineHeight="shorter"
+                    verticalAlign="baseline"
+                >
+                    {part}
+                </Box>
+            );
+        }
+        return <span key={idx}>{part}</span>;
+    });
 }
 
 /**
@@ -15,7 +61,7 @@ interface ChatMessageProps {
  * Envolvido em React.memo com comparação customizada para evitar re-renderizações desnecessárias.
  */
 export const ChatMessageItem = React.memo(
-    function ChatMessageItem({ message, isCompact = false }: ChatMessageProps) {
+    function ChatMessageItem({ message, isCompact = false, currentUserName }: ChatMessageProps) {
         const senderInitials = message.senderId ? message.senderId.slice(0, 5) : '??';
         const avatarColor = getAvatarColor(message.senderId);
 
@@ -43,7 +89,7 @@ export const ChatMessageItem = React.memo(
                         </HStack>
                         {message.text && (
                             <Text fontSize="xs" color="gray.200" wordBreak="break-word" lineHeight="short">
-                                {message.text}
+                                {renderMessageText(message.text, currentUserName)}
                             </Text>
                         )}
                         {message.attachment_url && (
@@ -87,7 +133,7 @@ export const ChatMessageItem = React.memo(
                     </HStack>
                     {message.text && (
                         <Text fontSize="sm" color="gray.300" wordBreak="break-word" lineHeight="tall">
-                            {message.text}
+                            {renderMessageText(message.text, currentUserName)}
                         </Text>
                     )}
                     {message.attachment_url && (
@@ -119,7 +165,8 @@ export const ChatMessageItem = React.memo(
             prevProps.message.text === nextProps.message.text &&
             prevProps.message.attachment_url === nextProps.message.attachment_url &&
             prevProps.isCompact === nextProps.isCompact &&
-            prevProps.index === nextProps.index
+            prevProps.index === nextProps.index &&
+            prevProps.currentUserName === nextProps.currentUserName
         );
     }
 );

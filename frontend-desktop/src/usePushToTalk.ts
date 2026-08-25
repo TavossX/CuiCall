@@ -1,181 +1,173 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { register, unregister, isRegistered } from '@tauri-apps/plugin-global-shortcut';
 
-export interface PushToTalkState {
-    isPttActive: boolean;
-    pttEnabled: boolean;
-    pttShortcut: string;
-    setPttEnabled: (enabled: boolean) => void;
-    setPttShortcut: (shortcut: string) => void;
+export interface PTTOptions {
+    defaultShortcut?: string; // Ex: 'CapsLock', 'F13', 'Alt+Space', 'Control+Shift+Space'
+    releaseDelayMs?: number;  // Tempo de buffer para não cortar o final da fala (ex: 150ms)
 }
 
 /**
- * Hook de Push-to-Talk (PTT) com suporte a atalhos globais de sistema (Tauri)
- * e eventos nativos de teclado do navegador/webview.
+ * Hook de Push-to-Talk (PTT) Global para Tauri v2 e React.
+ * Gerencia a escuta de atalhos globais do sistema operacional (mesmo em segundo plano/jogos)
+ * e fornece o estado `isPTTActive` em tempo real para sincronização com WebRTC.
  */
-export function usePushToTalk(): PushToTalkState {
-    const [pttEnabled, setPttEnabledState] = useState<boolean>(() => {
+export const usePushToTalk = (options?: PTTOptions) => {
+    const [isPTTEnabled, setIsPTTEnabled] = useState<boolean>(() => {
         return localStorage.getItem('cuicall-ptt-enabled') === 'true';
     });
 
-    const [pttShortcut, setPttShortcutState] = useState<string>(() => {
-        return localStorage.getItem('cuicall-ptt-shortcut') || 'F8';
+    const [pttShortcut, setPttShortcut] = useState<string>(() => {
+        return localStorage.getItem('cuicall-ptt-shortcut') || options?.defaultShortcut || 'CapsLock';
     });
 
-    const [isPttActive, setIsPttActive] = useState<boolean>(false);
-    const isPttActiveRef = useRef(false);
-    isPttActiveRef.current = isPttActive;
+    const [releaseDelay, setReleaseDelay] = useState<number>(() => {
+        const stored = localStorage.getItem('cuicall-ptt-delay');
+        return stored ? parseInt(stored, 10) : (options?.releaseDelayMs ?? 150);
+    });
 
-    const setPttEnabled = useCallback((enabled: boolean) => {
-        setPttEnabledState(enabled);
-        localStorage.setItem('cuicall-ptt-enabled', enabled ? 'true' : 'false');
-        if (!enabled) {
-            setIsPttActive(false);
-        }
-    }, []);
+    const [isPTTActive, setIsPTTActive] = useState<boolean>(false);
+    const releaseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const isPTTActiveRef = useRef<boolean>(false);
 
-    const setPttShortcut = useCallback((shortcut: string) => {
-        setPttShortcutState(shortcut);
-        localStorage.setItem('cuicall-ptt-shortcut', shortcut);
-    }, []);
-
-    // Sincroniza quando alterado pelo modal de configurações
+    // Atualiza referência síncrona
     useEffect(() => {
-        const handleConfigChange = (e: any) => {
-            if (e.detail?.pttEnabled !== undefined) {
-                setPttEnabledState(e.detail.pttEnabled);
-            }
-            if (e.detail?.pttShortcut) {
-                setPttShortcutState(e.detail.pttShortcut);
+        isPTTActiveRef.current = isPTTActive;
+    }, [isPTTActive]);
+
+    // Escuta alterações de configuração feitas em outros modais (ex: SettingsModal)
+    useEffect(() => {
+        const handleConfigChanged = (e: any) => {
+            if (e.detail) {
+                if (typeof e.detail.pttEnabled === 'boolean') {
+                    setIsPTTEnabled(e.detail.pttEnabled);
+                }
+                if (e.detail.pttShortcut) {
+                    setPttShortcut(e.detail.pttShortcut);
+                }
+                if (typeof e.detail.releaseDelay === 'number') {
+                    setReleaseDelay(e.detail.releaseDelay);
+                }
             }
         };
 
-        window.addEventListener('cuicall:pttConfigChanged', handleConfigChange);
-        return () => window.removeEventListener('cuicall:pttConfigChanged', handleConfigChange);
+        window.addEventListener('cuicall:pttConfigChanged', handleConfigChanged);
+        return () => {
+            window.removeEventListener('cuicall:pttConfigChanged', handleConfigChanged);
+        };
     }, []);
 
-    // ── 1. Integração com Tauri Global Shortcut ──
+    // Salva preferências no localStorage
+    const updatePTTEnabled = useCallback((enabled: boolean) => {
+        setIsPTTEnabled(enabled);
+        localStorage.setItem('cuicall-ptt-enabled', String(enabled));
+        if (!enabled) {
+            setIsPTTActive(false);
+            if (releaseTimeoutRef.current) clearTimeout(releaseTimeoutRef.current);
+        }
+    }, []);
+
+    const updatePTTShortcut = useCallback((shortcut: string) => {
+        setPttShortcut(shortcut);
+        localStorage.setItem('cuicall-ptt-shortcut', shortcut);
+    }, []);
+
+    const updateReleaseDelay = useCallback((delay: number) => {
+        setReleaseDelay(delay);
+        localStorage.setItem('cuicall-ptt-delay', String(delay));
+    }, []);
+
+    // Handlers de ativação e desativação com buffer de liberação
+    const handlePTTPressed = useCallback(() => {
+        if (releaseTimeoutRef.current) {
+            clearTimeout(releaseTimeoutRef.current);
+            releaseTimeoutRef.current = null;
+        }
+        if (!isPTTActiveRef.current) {
+            setIsPTTActive(true);
+        }
+    }, []);
+
+    const handlePTTReleased = useCallback(() => {
+        if (releaseTimeoutRef.current) {
+            clearTimeout(releaseTimeoutRef.current);
+        }
+        // Aplica o buffer de liberação para não cortar a última sílaba falada
+        releaseTimeoutRef.current = setTimeout(() => {
+            setIsPTTActive(false);
+            releaseTimeoutRef.current = null;
+        }, releaseDelay);
+    }, [releaseDelay]);
+
+    // Registra o atalho global no Tauri v2
     useEffect(() => {
-        if (!pttEnabled || !pttShortcut) {
-            setIsPttActive(false);
+        if (!isPTTEnabled || !pttShortcut) {
+            setIsPTTActive(false);
             return;
         }
 
-        let isRegistered = false;
-        let unregisterFn: (() => Promise<void>) | null = null;
+        let isMounted = true;
+        let registeredShortcut = pttShortcut;
 
         const setupGlobalShortcut = async () => {
             try {
-                const { register, unregister, isRegistered: checkRegistered } = await import('@tauri-apps/plugin-global-shortcut');
-
-                // Se já estiver registrado, desregistra antes
-                const alreadyRegistered = await checkRegistered(pttShortcut);
+                // Remove registro anterior caso exista
+                const alreadyRegistered = await isRegistered(registeredShortcut);
                 if (alreadyRegistered) {
-                    await unregister(pttShortcut);
+                    await unregister(registeredShortcut);
                 }
 
-                await register(pttShortcut, (event) => {
+                if (!isMounted) return;
+
+                // Registra o atalho global no Tauri v2
+                await register(registeredShortcut, (event) => {
                     if (event.state === 'Pressed') {
-                        setIsPttActive(true);
+                        handlePTTPressed();
                     } else if (event.state === 'Released') {
-                        setIsPttActive(false);
+                        handlePTTReleased();
                     }
                 });
-
-                isRegistered = true;
-                unregisterFn = async () => {
-                    try {
-                        await unregister(pttShortcut);
-                    } catch (e) {
-                        console.warn('[PTT] Erro ao desregistrar atalho global:', e);
-                    }
-                };
-                console.log(`[PTT 🎙️] Atalho global Tauri "${pttShortcut}" registrado com sucesso.`);
+                console.log(`[PTT] Atalho global registrado com sucesso: ${registeredShortcut}`);
             } catch (err) {
-                console.warn('[PTT] Tauri Global Shortcut não disponível (modo web ou erro de permissão):', err);
+                console.warn(`[PTT] Aviso ao registrar atalho global '${registeredShortcut}':`, err);
             }
         };
 
         setupGlobalShortcut();
 
-        return () => {
-            if (isRegistered && unregisterFn) {
-                unregisterFn();
-            }
-        };
-    }, [pttEnabled, pttShortcut]);
-
-    // ── 2. Fallback / Listener Local no DOM (captura imediata enquanto janela está em foco) ──
-    useEffect(() => {
-        if (!pttEnabled) {
-            setIsPttActive(false);
-            return;
-        }
-
-        const normalizedTarget = pttShortcut.trim().toUpperCase();
-
-        const handleKeyDown = (e: KeyboardEvent) => {
-            // Ignora se o foco estiver em um input de texto ou textarea
-            const target = e.target as HTMLElement;
-            if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-                return;
-            }
-
-            const keyName = e.key.toUpperCase();
-            const codeName = e.code.toUpperCase();
-
-            const isMatch =
-                keyName === normalizedTarget ||
-                codeName === normalizedTarget ||
-                (normalizedTarget === 'ALT' && e.altKey) ||
-                (normalizedTarget === 'CONTROL' && e.ctrlKey) ||
-                (normalizedTarget === 'SHIFT' && e.shiftKey) ||
-                (normalizedTarget === 'SPACE' && e.code === 'Space');
-
-            if (isMatch) {
-                if (!e.repeat) {
-                    setIsPttActive(true);
-                }
+        // Fallback para eventos de janela durante desenvolvimento web ou foco direto
+        const handleWindowKeyDown = (e: KeyboardEvent) => {
+            if (e.code === registeredShortcut || e.key === registeredShortcut) {
+                if (!e.repeat) handlePTTPressed();
             }
         };
 
-        const handleKeyUp = (e: KeyboardEvent) => {
-            const keyName = e.key.toUpperCase();
-            const codeName = e.code.toUpperCase();
-
-            const isMatch =
-                keyName === normalizedTarget ||
-                codeName === normalizedTarget ||
-                (normalizedTarget === 'ALT' && !e.altKey) ||
-                (normalizedTarget === 'CONTROL' && !e.ctrlKey) ||
-                (normalizedTarget === 'SHIFT' && !e.shiftKey) ||
-                (normalizedTarget === 'SPACE' && e.code === 'Space');
-
-            if (isMatch) {
-                setIsPttActive(false);
+        const handleWindowKeyUp = (e: KeyboardEvent) => {
+            if (e.code === registeredShortcut || e.key === registeredShortcut) {
+                handlePTTReleased();
             }
         };
 
-        const handleWindowBlur = () => {
-            // Se a janela perder foco e não houver atalho global, muta por segurança
-            setIsPttActive(false);
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        window.addEventListener('keyup', handleKeyUp);
-        window.addEventListener('blur', handleWindowBlur);
+        window.addEventListener('keydown', handleWindowKeyDown);
+        window.addEventListener('keyup', handleWindowKeyUp);
 
         return () => {
-            window.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('keyup', handleKeyUp);
-            window.removeEventListener('blur', handleWindowBlur);
+            isMounted = false;
+            window.removeEventListener('keydown', handleWindowKeyDown);
+            window.removeEventListener('keyup', handleWindowKeyUp);
+
+            unregister(registeredShortcut).catch((err) => {
+                console.debug(`[PTT] Cleanup de atalho global '${registeredShortcut}':`, err);
+            });
         };
-    }, [pttEnabled, pttShortcut]);
+    }, [isPTTEnabled, pttShortcut, handlePTTPressed, handlePTTReleased]);
 
     return {
-        isPttActive,
-        pttEnabled,
+        isPTTEnabled,
+        isPTTActive,
         pttShortcut,
-        setPttEnabled,
-        setPttShortcut,
+        releaseDelay,
+        updatePTTEnabled,
+        updatePTTShortcut,
+        updateReleaseDelay,
     };
-}
+};

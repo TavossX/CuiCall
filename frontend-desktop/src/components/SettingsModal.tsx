@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import {
     Modal, ModalOverlay, ModalContent, ModalHeader, ModalBody, ModalCloseButton,
     Button, VStack, Text, Select, FormControl, FormLabel, Tabs, TabList, TabPanels, Tab, TabPanel,
-    Input, useToast, Avatar, Flex, Progress, Badge, Box, Switch, Divider, Tooltip
+    Input, useToast, Avatar, Flex, Progress, Badge, Box, Switch, Divider, Tooltip,
+    Slider, SliderTrack, SliderFilledTrack, SliderThumb
 } from '@chakra-ui/react';
 import { FiCamera } from 'react-icons/fi';
 import { supabase } from '../supabaseClient';
@@ -31,6 +32,12 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
     const [selectedVideoInput, setSelectedVideoInput] = useState(localStorage.getItem('cuicall-video-input') || '');
     const [pttEnabled, setPttEnabled] = useState(localStorage.getItem('cuicall-ptt-enabled') === 'true');
     const [pttShortcut, setPttShortcut] = useState(localStorage.getItem('cuicall-ptt-shortcut') || 'F8');
+    const [noiseSuppressionEnabled, setNoiseSuppressionEnabled] = useState(
+        localStorage.getItem('cuicall-noise-suppression') === null ? true : localStorage.getItem('cuicall-noise-suppression') === 'true'
+    );
+    const [noiseThreshold, setNoiseThreshold] = useState(
+        localStorage.getItem('cuicall-noise-threshold') ? parseInt(localStorage.getItem('cuicall-noise-threshold')!, 10) : -48
+    );
 
     // Aba Perfil
     const [userId, setUserId] = useState<string | null>(null);
@@ -91,11 +98,16 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
         localStorage.setItem('cuicall-video-input', selectedVideoInput);
         localStorage.setItem('cuicall-ptt-enabled', pttEnabled ? 'true' : 'false');
         localStorage.setItem('cuicall-ptt-shortcut', pttShortcut);
+        localStorage.setItem('cuicall-noise-suppression', noiseSuppressionEnabled ? 'true' : 'false');
+        localStorage.setItem('cuicall-noise-threshold', String(noiseThreshold));
 
         // Dispara evento para hooks ativos
         if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('cuicall:pttConfigChanged', {
                 detail: { pttEnabled, pttShortcut }
+            }));
+            window.dispatchEvent(new CustomEvent('cuicall:noiseConfigChanged', {
+                detail: { noiseSuppressionEnabled, noiseThreshold }
             }));
         }
 
@@ -379,6 +391,49 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
 
                                         <Divider borderColor="gray.700" my={1} />
 
+                                        {/* Configuração de Supressão de Ruído e Noise Gate */}
+                                        <Box p={3} borderRadius="md" bg="gray.900" border="1px solid" borderColor="gray.700" w="full">
+                                            <Flex justify="space-between" align="center" mb={2}>
+                                                <Box>
+                                                    <Text fontSize="sm" fontWeight="bold" color="white">Supressão de Ruído & Noise Gate</Text>
+                                                    <Text fontSize="xs" color="gray.400">
+                                                        Filtra ruídos de fundo, cliques de teclado e vibrações cortando o sinal quando você não está falando.
+                                                    </Text>
+                                                </Box>
+                                                <Switch
+                                                    colorScheme="blue"
+                                                    isChecked={noiseSuppressionEnabled}
+                                                    onChange={(e) => setNoiseSuppressionEnabled(e.target.checked)}
+                                                />
+                                            </Flex>
+
+                                            {noiseSuppressionEnabled && (
+                                                <Box mt={3} pt={2} borderTop="1px dashed" borderColor="gray.800">
+                                                    <Flex justify="space-between" align="center" mb={1}>
+                                                        <Text fontSize="xs" color="gray.400">Sensibilidade do Noise Gate</Text>
+                                                        <Text fontSize="xs" fontWeight="bold" color="blue.300">{noiseThreshold} dB</Text>
+                                                    </Flex>
+                                                    <Slider
+                                                        min={-60}
+                                                        max={-30}
+                                                        step={1}
+                                                        value={noiseThreshold}
+                                                        onChange={(val) => setNoiseThreshold(val)}
+                                                        colorScheme="blue"
+                                                    >
+                                                        <SliderTrack bg="gray.700">
+                                                            <SliderFilledTrack />
+                                                        </SliderTrack>
+                                                        <SliderThumb boxSize={4} bg="blue.400" />
+                                                    </Slider>
+                                                    <Flex justify="space-between" mt={1}>
+                                                        <Text fontSize="10px" color="gray.500">Mais sensível (-60 dB)</Text>
+                                                        <Text fontSize="10px" color="gray.500">Mais agressivo (-30 dB)</Text>
+                                                    </Flex>
+                                                </Box>
+                                            )}
+                                        </Box>
+
                                         {/* Configuração de Push-to-Talk (PTT) */}
                                         <Box p={3} borderRadius="md" bg="gray.900" border="1px solid" borderColor="gray.700" w="full">
                                             <Flex justify="space-between" align="center" mb={2}>
@@ -419,7 +474,7 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                                         </Box>
 
                                         <Text fontSize="xs" color="gray.500">
-                                            As configurações de áudio, vídeo e Push-to-Talk são salvas e sincronizadas automaticamente.
+                                            As configurações de áudio, vídeo, filtro de ruído e Push-to-Talk são salvas e sincronizadas automaticamente.
                                         </Text>
                                         <Button colorScheme="blue" w="full" onClick={handleSaveDevices}>
                                             Salvar Configurações de Áudio
@@ -432,7 +487,7 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                                         <Box p={4} borderRadius="lg" bg="gray.900" border="1px solid" borderColor="gray.700">
                                             <Flex justify="space-between" align="center" mb={2}>
                                                 <Text fontSize="sm" fontWeight="bold" color="white">CuiCall Desktop</Text>
-                                                <Badge colorScheme="blue" borderRadius="full" px={2}>v0.3.2</Badge>
+                                                <Badge colorScheme="blue" borderRadius="full" px={2}>v0.3.3</Badge>
                                             </Flex>
                                             <Text fontSize="xs" color="gray.400">
                                                 O CuiCall verifica e instala atualizações automaticamente sempre que uma nova versão é lançada.

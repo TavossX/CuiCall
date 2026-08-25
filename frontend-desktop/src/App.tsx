@@ -19,6 +19,7 @@ import { VideoGrid } from './components/VideoGrid';
 import { ChatMessageItem } from './components/ChatMessage';
 import { FriendsView, FriendProfile } from './components/FriendsView';
 import { DMPanel } from './components/DMPanel';
+import { TypingIndicator } from './components/TypingIndicator';
 import { getAvatarColor } from './utils/avatarColors';
 import { KuiAvatarIcon } from './components/KuiAvatar';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
@@ -35,21 +36,22 @@ export interface Channel {
     created_at: string;
 }
 
-function App() {
+export function App() {
     const [isLoading, setIsLoading] = useState(true);
     const [loadingMessage, setLoadingMessage] = useState('Verificando sessão...');
     const [session, setSession] = useState<any>(null);
+    const [userProfile, setUserProfile] = useState<{ username?: string; display_name?: string; avatar_url?: string } | null>(null);
     const [servers, setServers] = useState<any[]>([]);
     const [selectedServer, setSelectedServer] = useState<any | null>(null);
     const [channels, setChannels] = useState<Channel[]>([]);
     const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
-    const [chatInput, setChatInput] = useState('');
     const [activeFriend, setActiveFriend] = useState<FriendProfile | null>(null);
     const [sidebarFriends, setSidebarFriends] = useState<FriendProfile[]>([]);
+    const [chatInput, setChatInput] = useState('');
     const [channelTypeToCreate, setChannelTypeToCreate] = useState<'text' | 'voice'>('text');
-    const [userProfile, setUserProfile] = useState<{ username?: string; display_name?: string; avatar_url?: string } | null>(null);
     const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
     const channelFileInputRef = useRef<HTMLInputElement>(null);
+    const lastChannelTypingSentRef = useRef<number>(0);
 
     const settingsDisclosure = useDisclosure();
     const createServerDisclosure = useDisclosure();
@@ -62,8 +64,9 @@ function App() {
     const {
         localStream, remoteStreams, inVoice, voiceRoomId,
         isCamOff, isMuted, isScreenSharing,
-        isPttActive, pttEnabled, pttShortcut,
+        isPTTActive, isPTTEnabled, pttShortcut,
         channelMessages, directMessages, voicePresence,
+        typingUsers, dmTypingUsers, sendTyping, sendDMTyping,
         setChannelMessages, loadChannelMessages, loadDirectMessages,
         joinVoice, leaveVoice, joinTextChannel,
         toggleMute, toggleCamera, shareScreen,
@@ -72,7 +75,7 @@ function App() {
     } = useWebRTC();
 
     // Hook unificado de notificações (áudio + OS Tauri)
-    const { playSound, notifyNewDM, notifyVoiceState, notifyOS } = useNotifications();
+    const { playSound, notifyNewDM, notifyMention, notifyVoiceState, notifyOS } = useNotifications();
 
     // Hook do Auto-Updater (executa verificação silenciosa ao abrir o app)
     useAutoUpdater();
@@ -96,7 +99,7 @@ function App() {
     };
 
     const fetchUserProfile = async (userId: string) => {
-        const { data } = await supabase.from('profiles').select('*').eq('id', userId).single();
+        const { data } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
         if (data) setUserProfile(data);
     };
 
@@ -185,6 +188,24 @@ function App() {
             fetchSidebarFriends();
         };
 
+        const handleNewChannelMessage = (e: any) => {
+            const { senderId, text, channelId } = e.detail;
+            if (senderId === userName) return;
+
+            const isChannelActive = activeChannel?.id === channelId;
+            const channelName = channels.find(c => c.id === channelId)?.name || 'canal';
+
+            // Detecta menção ao usuário atual ou menções globais
+            const mentionRegex = new RegExp(`@(${userName}|everyone|todos|here|aqui)\\b`, 'i');
+            const hasMention = mentionRegex.test(text || '');
+
+            if (hasMention) {
+                notifyMention(senderId, channelName, text, isChannelActive);
+            } else if (!isChannelActive) {
+                playSound('message');
+            }
+        };
+
         const handleVoiceState = (e: any) => {
             const { action, connectionId } = e.detail;
             notifyVoiceState(action, connectionId);
@@ -203,17 +224,19 @@ function App() {
         };
 
         window.addEventListener('cuicall:newDirectMessage', handleNewDM);
+        window.addEventListener('cuicall:newChannelMessage', handleNewChannelMessage);
         window.addEventListener('cuicall:voiceState', handleVoiceState);
         window.addEventListener('cuicall:friendRequestReceived', handleFriendReq);
         window.addEventListener('cuicall:friendRequestAccepted', handleFriendAcc);
 
         return () => {
             window.removeEventListener('cuicall:newDirectMessage', handleNewDM);
+            window.removeEventListener('cuicall:newChannelMessage', handleNewChannelMessage);
             window.removeEventListener('cuicall:voiceState', handleVoiceState);
             window.removeEventListener('cuicall:friendRequestReceived', handleFriendReq);
             window.removeEventListener('cuicall:friendRequestAccepted', handleFriendAcc);
         };
-    }, [activeFriend, selectedServer, notifyNewDM, notifyVoiceState, playSound, notifyOS, fetchSidebarFriends]);
+    }, [activeFriend, activeChannel, channels, selectedServer, userName, notifyNewDM, notifyMention, notifyVoiceState, playSound, notifyOS, fetchSidebarFriends]);
 
     // Deep-link para convites
     useEffect(() => {
@@ -301,13 +324,27 @@ function App() {
             .order('created_at', { ascending: true });
 
         if (!error && data) {
-            const formatted = data.map((m: any) => ({
-                senderId: m.user_id === session?.user?.id ? userName : m.user_id.slice(0, 8),
-                text: m.content || '',
-                attachment_url: m.attachment_url || null,
-                id: m.id,
-                created_at: m.created_at,
-            }));
+            const formatted = data.map((m: any) => {
+                let text = m.content || m.text || '';
+                let attachment = m.attachment_url || null;
+
+                // Extrai URL de imagem caso o schema armazene o anexo dentro do texto por fallback
+                if (!attachment && text) {
+                    const urlMatch = text.match(/(https?:\/\/[^\s]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp)(\?[^\s]*)?)/i);
+                    if (urlMatch) {
+                        attachment = urlMatch[0];
+                        text = text.replace(urlMatch[0], '').trim();
+                    }
+                }
+
+                return {
+                    senderId: m.user_id === session?.user?.id ? userName : m.user_id.slice(0, 8),
+                    text,
+                    attachment_url: attachment,
+                    id: m.id,
+                    created_at: m.created_at,
+                };
+            });
             setCache(channelId, formatted);
             loadChannelMessages(channelId, formatted);
         }
@@ -350,6 +387,8 @@ function App() {
     const handleChannelFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file || !activeChannel || !session?.user) return;
+
+        // Reset do input
         e.target.value = '';
 
         if (!file.type.startsWith('image/')) {
@@ -367,20 +406,32 @@ function App() {
         try {
             const fileExt = file.name.split('.').pop() || 'png';
             const fileName = `channel-${session.user.id}-${Date.now()}.${fileExt}`;
-            const { error: uploadError } = await supabase.storage
-                .from('chat_attachments')
+            
+            let bucketName = 'chat_attachments';
+            let { error: uploadError } = await supabase.storage
+                .from(bucketName)
                 .upload(fileName, file, { upsert: true });
+
+            // Se o bucket chat_attachments não existir, tenta o bucket 'images'
+            if (uploadError && uploadError.message?.toLowerCase().includes('bucket not found')) {
+                bucketName = 'images';
+                const retryUpload = await supabase.storage
+                    .from(bucketName)
+                    .upload(fileName, file, { upsert: true });
+                uploadError = retryUpload.error;
+            }
 
             if (uploadError) throw uploadError;
 
-            const { data } = supabase.storage.from('chat_attachments').getPublicUrl(fileName);
+            const { data } = supabase.storage.from(bucketName).getPublicUrl(fileName);
             const attachmentUrl = data.publicUrl;
 
             const textToSend = chatInput.trim();
             const channelId = activeChannel.id;
             setChatInput('');
 
-            const { data: insertedMsg, error: insertError } = await supabase
+            // 1ª Tentativa: Salvar com a coluna attachment_url
+            let { data: insertedMsg, error: insertError } = await supabase
                 .from('messages')
                 .insert([{
                     channel_id: channelId,
@@ -390,6 +441,22 @@ function App() {
                 }])
                 .select()
                 .single();
+
+            // Fallback: se a coluna attachment_url não existir no schema do banco, salva o link em content
+            if (insertError && (insertError.message.includes('attachment_url') || insertError.message.includes('column'))) {
+                const fallbackContent = textToSend ? `${textToSend}\n${attachmentUrl}` : attachmentUrl;
+                const retry = await supabase
+                    .from('messages')
+                    .insert([{
+                        channel_id: channelId,
+                        user_id: session.user.id,
+                        content: fallbackContent
+                    }])
+                    .select()
+                    .single();
+                insertedMsg = retry.data;
+                insertError = retry.error;
+            }
 
             if (insertError) throw insertError;
 
@@ -781,22 +848,22 @@ function App() {
                         />
                         <Box flex="1" minW={0}>
                             <Text fontSize="xs" fontWeight="bold" color="white" isTruncated>{userName}</Text>
-                            <Text fontSize="10px" color={inVoice ? (pttEnabled ? (isPttActive ? 'green.300' : 'blue.300') : 'green.400') : 'gray.500'} isTruncated fontWeight={inVoice && isPttActive ? 'bold' : 'normal'}>
+                            <Text fontSize="10px" color={inVoice ? (isPTTEnabled ? (isPTTActive ? 'green.300' : 'blue.300') : 'green.400') : 'gray.500'} isTruncated fontWeight={inVoice && isPTTActive ? 'bold' : 'normal'}>
                                 {inVoice
-                                    ? (pttEnabled
-                                        ? (isPttActive ? `🎙️ Transmitindo (${pttShortcut})` : `PTT Ativo [${pttShortcut}]`)
+                                    ? (isPTTEnabled
+                                        ? (isPTTActive ? `🎙️ Transmitindo (${pttShortcut})` : `PTT Ativo [${pttShortcut}]`)
                                         : 'Voz Conectada')
                                     : 'Online'}
                             </Text>
                         </Box>
                         <HStack spacing={0}>
-                            <Tooltip label={pttEnabled ? `Push-to-Talk ativado: Segure [${pttShortcut}] para falar` : (isMuted ? 'Ativar Microfone' : 'Mutar Microfone')}>
+                            <Tooltip label={isPTTEnabled ? `Push-to-Talk ativado: Segure [${pttShortcut}] para falar` : (isMuted ? 'Ativar Microfone' : 'Mutar Microfone')}>
                                 <IconButton
                                     aria-label="Mic"
                                     icon={isMuted ? <BsMicMuteFill /> : <BsMicFill />}
                                     size="xs"
                                     variant="ghost"
-                                    color={pttEnabled ? (isPttActive ? 'green.400' : 'blue.300') : (isMuted ? 'red.400' : 'gray.400')}
+                                    color={isPTTEnabled ? (isPTTActive ? 'green.400' : 'blue.300') : (isMuted ? 'red.400' : 'gray.400')}
                                     _hover={{ color: isMuted ? 'red.300' : 'white', bg: 'gray.700' }}
                                     onClick={toggleMute}
                                     isDisabled={!inVoice}
@@ -840,6 +907,8 @@ function App() {
                             onSendMessage={sendDirectMessage}
                             onBack={() => setActiveFriend(null)}
                             loadMessages={loadDirectMessages}
+                            isPartnerTyping={!!(activeFriend?.id && dmTypingUsers[activeFriend.id] && Date.now() < dmTypingUsers[activeFriend.id])}
+                            onSendTyping={() => activeFriend && sendDMTyping(activeFriend.id, userName)}
                         />
                     ) : (
                         <FriendsView
@@ -891,6 +960,9 @@ function App() {
                                     handleSendMessage={handleSendMessage}
                                     handleFileSelect={handleChannelFileSelect}
                                     isUploading={isUploadingAttachment}
+                                    userName={userName}
+                                    typingUsers={activeChannel?.id && typingUsers[activeChannel.id] ? Object.keys(typingUsers[activeChannel.id]).filter(u => u !== userName) : []}
+                                    onSendTyping={() => activeChannel?.id && sendTyping(activeChannel.id, userName)}
                                 />
                             </Flex>
                         ) : activeChannel ? (
@@ -909,11 +981,21 @@ function App() {
                                             followOutput="smooth"
                                             style={{ height: '100%', width: '100%' }}
                                             itemContent={(index, msg) => (
-                                                <ChatMessageItem key={index} message={msg} index={index} />
+                                                <ChatMessageItem key={index} message={msg} index={index} currentUserName={userName} />
                                             )}
                                         />
                                     )}
                                 </Box>
+
+                                {/* Indicador Visual de Digitação no Canal */}
+                                {activeChannel?.id && typingUsers[activeChannel.id] && (
+                                    <Box px={4} py={1} bg="gray.800" borderTop="1px solid" borderColor="gray.700">
+                                        <TypingIndicator
+                                            users={Object.keys(typingUsers[activeChannel.id]).filter(u => u !== userName)}
+                                        />
+                                    </Box>
+                                )}
+
                                 <Box px={4} py={3} borderTop="1px solid" borderColor="gray.600" bg="gray.750">
                                     <input
                                         type="file"
@@ -939,7 +1021,19 @@ function App() {
                                             placeholder={isUploadingAttachment ? "Enviando anexo..." : `Conversar em # ${activeChannel.name}`}
                                             value={chatInput}
                                             onChange={(e) => setChatInput(e.target.value)}
-                                            onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    handleSendMessage();
+                                                    return;
+                                                }
+                                                if (activeChannel?.id && userName) {
+                                                    const now = Date.now();
+                                                    if (now - lastChannelTypingSentRef.current > 3000) {
+                                                        lastChannelTypingSentRef.current = now;
+                                                        sendTyping(activeChannel.id, userName);
+                                                    }
+                                                }
+                                            }}
                                             bg="gray.800" border="none" size="md" borderRadius="lg"
                                             _focus={{ boxShadow: 'none', bg: 'gray.850' }}
                                             _placeholder={{ color: 'gray.400' }}
@@ -1049,8 +1143,9 @@ function ChannelItem({ label, isActive, isConnected, onClick }: { label: string;
     );
 }
 
-function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage, handleFileSelect, isUploading }: any) {
+function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage, handleFileSelect, isUploading, userName, typingUsers = [], onSendTyping }: any) {
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const lastTypingSentRef = useRef<number>(0);
 
     return (
         <Flex w="300px" minW="300px" flexDir="column" bg="gray.800" borderLeft="1px solid" borderColor="gray.600">
@@ -1069,11 +1164,19 @@ function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage, handl
                         followOutput="smooth"
                         style={{ height: '100%', width: '100%' }}
                         itemContent={(index: number, msg: any) => (
-                            <ChatMessageItem key={index} message={msg} index={index} isCompact={true} />
+                            <ChatMessageItem key={index} message={msg} index={index} isCompact={true} currentUserName={userName} />
                         )}
                     />
                 )}
             </Box>
+
+            {/* Indicador de Digitação no Chat da Sala */}
+            {typingUsers && typingUsers.length > 0 && (
+                <Box px={3} py={1} bg="gray.850" borderTop="1px solid" borderColor="gray.700">
+                    <TypingIndicator users={typingUsers} />
+                </Box>
+            )}
+
             <Box px={3} py={3} borderTop="1px solid" borderColor="gray.700">
                 <input
                     type="file"
@@ -1099,7 +1202,19 @@ function ChatPanel({ messages, chatInput, setChatInput, handleSendMessage, handl
                         placeholder={isUploading ? "Enviando..." : "Mensagem..."}
                         value={chatInput}
                         onChange={(e: any) => setChatInput(e.target.value)}
-                        onKeyDown={(e: any) => e.key === 'Enter' && handleSendMessage()}
+                        onKeyDown={(e: any) => {
+                            if (e.key === 'Enter') {
+                                handleSendMessage();
+                                return;
+                            }
+                            if (onSendTyping) {
+                                const now = Date.now();
+                                if (now - lastTypingSentRef.current > 3000) {
+                                    lastTypingSentRef.current = now;
+                                    onSendTyping();
+                                }
+                            }
+                        }}
                         bg="gray.900" border="none" size="sm" _focus={{ boxShadow: 'none' }}
                         isDisabled={isUploading}
                     />
