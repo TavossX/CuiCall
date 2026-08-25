@@ -171,17 +171,27 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                 setAvatarUrl(data.publicUrl);
             }
 
-            // Salva na tabela profiles respeitando exatamente o schema: id, display_name, avatar_url, updated_at
-            const profilePayload = {
-                id: user.id,
+            const updatePayload = {
                 display_name: displayName.trim(),
                 avatar_url: finalAvatarUrl,
                 updated_at: new Date().toISOString()
             };
 
-            const { error: saveError } = await supabase
+            // 1ª Tentativa: UPDATE direto com .eq('id', user.id)
+            // (Se a row já existe, o UPDATE é executado diretamente sem acionar a policy de INSERT do PostgreSQL)
+            let { data: updatedRows, error: saveError } = await supabase
                 .from('profiles')
-                .upsert(profilePayload);
+                .update(updatePayload)
+                .eq('id', user.id)
+                .select();
+
+            // 2ª Tentativa: Se nenhuma linha existia na tabela, tenta INSERT
+            if (!saveError && (!updatedRows || updatedRows.length === 0)) {
+                const { error: insertError } = await supabase
+                    .from('profiles')
+                    .insert([{ id: user.id, ...updatePayload }]);
+                saveError = insertError;
+            }
 
             if (saveError) {
                 toast({ title: 'Erro ao salvar perfil', description: saveError.message, status: 'error' });
@@ -462,7 +472,7 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                                         <Box p={4} borderRadius="lg" bg="gray.900" border="1px solid" borderColor="gray.700">
                                             <Flex justify="space-between" align="center" mb={2}>
                                                 <Text fontSize="sm" fontWeight="bold" color="white">CuiCall Desktop</Text>
-                                                <Badge colorScheme="blue" borderRadius="full" px={2}>v0.3.4</Badge>
+                                                <Badge colorScheme="blue" borderRadius="full" px={2}>v0.3.5</Badge>
                                             </Flex>
                                             <Text fontSize="xs" color="gray.400">
                                                 O CuiCall verifica e instala atualizações automaticamente sempre que uma nova versão é lançada.
