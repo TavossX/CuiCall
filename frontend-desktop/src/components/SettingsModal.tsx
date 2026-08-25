@@ -157,29 +157,43 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                 setAvatarUrl(data.publicUrl);
             }
 
-            // Atualiza ou insere o perfil com a coluna display_name
-            const profilePayload: Record<string, any> = {
+            // Prepara objeto com display_name
+            let profilePayload: Record<string, any> = {
                 display_name: displayName.trim(),
                 avatar_url: finalAvatarUrl,
                 updated_at: new Date().toISOString()
             };
 
-            let { error: saveError } = await supabase
+            // 1ª Tentativa: UPDATE com display_name (respeita a policy de UPDATE do RLS do Supabase)
+            let { error: saveError, data: updatedRows } = await supabase
                 .from('profiles')
-                .upsert({
-                    id: user.id,
-                    ...profilePayload
-                });
+                .update(profilePayload)
+                .eq('id', user.id)
+                .select();
 
-            // Se a tabela usar a coluna 'username' em vez de 'display_name' em algum schema alternativo
+            // Se a coluna 'display_name' não existir, tenta com 'username'
             if (saveError && (saveError.message.includes('display_name') || saveError.message.includes('column'))) {
                 delete profilePayload.display_name;
                 profilePayload.username = displayName.trim();
-                const retry = await supabase.from('profiles').upsert({
-                    id: user.id,
-                    ...profilePayload
-                });
-                saveError = retry.error;
+                const retryUpdate = await supabase
+                    .from('profiles')
+                    .update(profilePayload)
+                    .eq('id', user.id)
+                    .select();
+                saveError = retryUpdate.error;
+                updatedRows = retryUpdate.data;
+            }
+
+            // Se a linha ainda não existia na tabela (0 linhas atualizadas), tenta UPSERT com o id
+            if (!saveError && (!updatedRows || updatedRows.length === 0)) {
+                const { error: upsertError } = await supabase
+                    .from('profiles')
+                    .upsert({
+                        id: user.id,
+                        email: user.email,
+                        ...profilePayload
+                    });
+                saveError = upsertError;
             }
 
             if (saveError) {
