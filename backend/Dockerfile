@@ -2,10 +2,13 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-COPY backend.csproj ./
-RUN dotnet restore
+# Copia o projeto e restaura dependencias a partir da raiz do repositorio
+COPY backend/backend.csproj ./backend/
+RUN dotnet restore ./backend/backend.csproj
 
-COPY . ./
+# Copia o codigo-fonte do backend e publica
+COPY backend/ ./backend/
+WORKDIR /src/backend
 RUN dotnet publish -c Release -o /app/publish /p:UseAppHost=false
 
 # Etapa 2: Runtime do ASP.NET Core 9
