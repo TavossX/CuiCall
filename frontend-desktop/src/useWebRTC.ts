@@ -16,6 +16,87 @@ const DEFAULT_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
     frameRate: { ideal: 30, max: 30 },
 };
 
+const DEFAULT_SCREEN_CONSTRAINTS: MediaTrackConstraints = {
+    width: { ideal: 1280, max: 1280 },
+    height: { ideal: 720, max: 720 },
+    frameRate: { ideal: 30, max: 30 },
+};
+
+/**
+ * Adquire stream da câmera aplicando limites de 720p @ 30fps.
+ * Implementa fallbacks graduais caso o dispositivo não suporte a resolução ideal/máxima
+ * ou caso o usuário não possua câmera/recuse permissão de vídeo.
+ */
+const acquireCameraStream = async (
+    videoDeviceId?: string,
+    audioDeviceId?: string
+): Promise<MediaStream> => {
+    const videoConstraints: MediaTrackConstraints = {
+        ...DEFAULT_VIDEO_CONSTRAINTS,
+        ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
+    };
+
+    const audioConstraints: MediaTrackConstraints | boolean = audioDeviceId
+        ? { deviceId: { exact: audioDeviceId } }
+        : true;
+
+    // 1ª Tentativa: Limites de 720p / 30fps + áudio
+    try {
+        return await navigator.mediaDevices.getUserMedia({
+            video: videoConstraints,
+            audio: audioConstraints,
+        });
+    } catch (err) {
+        console.warn("[WebRTC] getUserMedia com constraints 720p/30fps falhou. Tentando fallback...", err);
+    }
+
+    // 2ª Tentativa: Fallback com vídeo sem restrições estritas de resolução
+    try {
+        return await navigator.mediaDevices.getUserMedia({
+            video: videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true,
+            audio: audioConstraints,
+        });
+    } catch (err) {
+        console.warn("[WebRTC] Fallback de vídeo falhou. Tentando áudio apenas...", err);
+    }
+
+    // 3ª Tentativa: Fallback para apenas microfone (caso não haja câmera ou permissão de vídeo)
+    return await navigator.mediaDevices.getUserMedia({
+        video: false,
+        audio: audioConstraints,
+    });
+};
+
+/**
+ * Adquire stream de compartilhamento de tela com limites de 720p @ 30fps e captura de áudio do sistema.
+ * Implementa fallback caso a captura de áudio do sistema não seja suportada pelo navegador/OS.
+ */
+const acquireScreenStream = async (): Promise<MediaStream> => {
+    // 1ª Tentativa: Compartilhamento de tela em 720p/30fps com áudio do sistema
+    try {
+        return await navigator.mediaDevices.getDisplayMedia({
+            video: DEFAULT_SCREEN_CONSTRAINTS,
+            audio: true,
+        });
+    } catch (err) {
+        console.warn("[WebRTC] getDisplayMedia com áudio falhou, tentando apenas vídeo com constraints:", err);
+    }
+
+    // 2ª Tentativa: Compartilhamento de tela em 720p/30fps apenas vídeo
+    try {
+        return await navigator.mediaDevices.getDisplayMedia({
+            video: DEFAULT_SCREEN_CONSTRAINTS,
+        });
+    } catch (err) {
+        console.warn("[WebRTC] getDisplayMedia com constraints falhou, tentando padrão do sistema:", err);
+    }
+
+    // 3ª Tentativa: getDisplayMedia básico
+    return await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+    });
+};
+
 export interface ChatMessage {
     senderId: string;
     text: string;
@@ -480,44 +561,40 @@ export const useWebRTC = () => {
         audioDeviceId?: string,
         profile?: { userName?: string; avatarUrl?: string }
     ) => {
-        const videoConstraints: MediaTrackConstraints = {
-            ...DEFAULT_VIDEO_CONSTRAINTS,
-            ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
-        };
+        try {
+            const stream = await acquireCameraStream(videoDeviceId, audioDeviceId);
+            setLocalStream(stream);
+            localStreamRef.current = stream;
 
-        const constraints: MediaStreamConstraints = {
-            video: videoConstraints,
-            audio: audioDeviceId ? { deviceId: { exact: audioDeviceId } } : true,
-        };
+            const hasVideo = stream.getVideoTracks().length > 0;
+            setIsCamOff(!hasVideo);
 
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        setLocalStream(stream);
-        localStreamRef.current = stream;
+            // Se o modo Push-To-Talk estiver ativado, o áudio inicia mutado até a tecla ser pressionada
+            const initialMuteState = pttEnabled;
+            stream.getAudioTracks().forEach(track => {
+                track.enabled = !initialMuteState;
+            });
 
-        // Se o modo Push-To-Talk estiver ativado, o áudio inicia mutado até a tecla ser pressionada
-        const initialMuteState = pttEnabled;
-        stream.getAudioTracks().forEach(track => {
-            track.enabled = !initialMuteState;
-        });
+            setIsMuted(initialMuteState);
+            isMutedRef.current = initialMuteState;
+            setIsScreenSharing(false);
+            setInVoice(true);
+            setVoiceRoomId(roomId);
+            voiceRoomIdRef.current = roomId;
 
-        setIsCamOff(false);
-        setIsMuted(initialMuteState);
-        isMutedRef.current = initialMuteState;
-        setIsScreenSharing(false);
-        setInVoice(true);
-        setVoiceRoomId(roomId);
-        voiceRoomIdRef.current = roomId;
+            const hub = await getHubConnection();
+            await hub.invoke("JoinRoom", roomId, profile?.userName || "Usuário", profile?.avatarUrl || "", initialMuteState);
 
-        const hub = await getHubConnection();
-        await hub.invoke("JoinRoom", roomId, profile?.userName || "Usuário", profile?.avatarUrl || "", initialMuteState);
-
-        peersRef.current.forEach((peer) => {
-            const senders = peer.getSenders();
-            if (senders.length === 0) {
-                stream.getTracks().forEach(track => peer.addTrack(track, stream));
-            }
-        });
-    }, [getHubConnection]);
+            peersRef.current.forEach((peer) => {
+                const senders = peer.getSenders();
+                if (senders.length === 0) {
+                    stream.getTracks().forEach(track => peer.addTrack(track, stream));
+                }
+            });
+        } catch (err) {
+            console.error("[WebRTC] Erro ao entrar no canal de voz:", err);
+        }
+    }, [getHubConnection, pttEnabled]);
 
     const leaveVoice = useCallback(async () => {
         localStreamRef.current?.getTracks().forEach(track => track.stop());
@@ -567,26 +644,41 @@ export const useWebRTC = () => {
             localStreamRef.current = audioOnly;
             setIsCamOff(true);
         } else {
-            const newVideoStream = await navigator.mediaDevices.getUserMedia({
-                video: DEFAULT_VIDEO_CONSTRAINTS,
-                audio: false
-            });
-            const newVideoTrack = newVideoStream.getVideoTracks()[0];
-
-            peersRef.current.forEach((peer) => {
-                const videoSender = peer.getSenders().find(
-                    s => s.track?.kind === 'video' || s.track === null
-                );
-                if (videoSender) {
-                    videoSender.replaceTrack(newVideoTrack);
+            try {
+                let newVideoStream: MediaStream;
+                try {
+                    newVideoStream = await navigator.mediaDevices.getUserMedia({
+                        video: DEFAULT_VIDEO_CONSTRAINTS,
+                        audio: false
+                    });
+                } catch (err) {
+                    console.warn("[WebRTC] getUserMedia com 720p/30fps falhou ao alternar câmera, tentando fallback:", err);
+                    newVideoStream = await navigator.mediaDevices.getUserMedia({
+                        video: true,
+                        audio: false
+                    });
                 }
-            });
 
-            const currentAudioTracks = localStreamRef.current?.getAudioTracks() ?? [];
-            const combined = new MediaStream([...currentAudioTracks, newVideoTrack]);
-            setLocalStream(combined);
-            localStreamRef.current = combined;
-            setIsCamOff(false);
+                const newVideoTrack = newVideoStream.getVideoTracks()[0];
+                if (newVideoTrack) {
+                    peersRef.current.forEach((peer) => {
+                        const videoSender = peer.getSenders().find(
+                            s => s.track?.kind === 'video' || s.track === null
+                        );
+                        if (videoSender) {
+                            videoSender.replaceTrack(newVideoTrack);
+                        }
+                    });
+
+                    const currentAudioTracks = localStreamRef.current?.getAudioTracks() ?? [];
+                    const combined = new MediaStream([...currentAudioTracks, newVideoTrack]);
+                    setLocalStream(combined);
+                    localStreamRef.current = combined;
+                    setIsCamOff(false);
+                }
+            } catch (err) {
+                console.error("[WebRTC] Falha ao reativar câmera:", err);
+            }
         }
     }, [isCamOff]);
 
@@ -610,51 +702,68 @@ export const useWebRTC = () => {
     }, [isMuted]);
 
     const shareScreen = useCallback(async () => {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: DEFAULT_VIDEO_CONSTRAINTS,
-            audio: true
-        });
-        const screenTrack = screenStream.getVideoTracks()[0];
+        try {
+            const screenStream = await acquireScreenStream();
+            const screenTrack = screenStream.getVideoTracks()[0];
+            if (!screenTrack) return;
 
-        peersRef.current.forEach((peer) => {
-            const videoSender = peer.getSenders().find(s => s.track?.kind === 'video');
-            if (videoSender) {
-                videoSender.replaceTrack(screenTrack);
-            }
-        });
-
-        setLocalStream(screenStream);
-        localStreamRef.current = screenStream;
-        setIsCamOff(false);
-        setIsScreenSharing(true);
-        isScreenSharingRef.current = true;
-
-        screenTrack.onended = async () => {
-            setIsScreenSharing(false);
-            isScreenSharingRef.current = false;
-            const currentRoom = voiceRoomIdRef.current;
-            if (currentRoom) {
-                try {
-                    const camStream = await navigator.mediaDevices.getUserMedia({
-                        video: DEFAULT_VIDEO_CONSTRAINTS,
-                        audio: true
-                    });
-                    const camVideoTrack = camStream.getVideoTracks()[0];
-
-                    peersRef.current.forEach((peer) => {
-                        const videoSender = peer.getSenders().find(s => s.track?.kind === 'video');
-                        if (videoSender) {
-                            videoSender.replaceTrack(camVideoTrack);
-                        }
-                    });
-
-                    setLocalStream(camStream);
-                    localStreamRef.current = camStream;
-                } catch {
-                    console.warn("[WebRTC] Could not re-acquire camera after screen share ended");
+            peersRef.current.forEach((peer) => {
+                const videoSender = peer.getSenders().find(s => s.track?.kind === 'video');
+                if (videoSender) {
+                    videoSender.replaceTrack(screenTrack);
                 }
-            }
-        };
+            });
+
+            setLocalStream(screenStream);
+            localStreamRef.current = screenStream;
+            setIsCamOff(false);
+            setIsScreenSharing(true);
+            isScreenSharingRef.current = true;
+
+            screenTrack.onended = async () => {
+                setIsScreenSharing(false);
+                isScreenSharingRef.current = false;
+                const currentRoom = voiceRoomIdRef.current;
+                if (currentRoom) {
+                    try {
+                        let camStream: MediaStream;
+                        try {
+                            camStream = await navigator.mediaDevices.getUserMedia({
+                                video: DEFAULT_VIDEO_CONSTRAINTS,
+                                audio: true
+                            });
+                        } catch (camErr) {
+                            console.warn("[WebRTC] Fallback de câmera após encerramento do compartilhamento de tela:", camErr);
+                            camStream = await navigator.mediaDevices.getUserMedia({
+                                video: true,
+                                audio: true
+                            });
+                        }
+
+                        // Preservar estado de mute ao re-obter áudio da câmera/microfone
+                        const currentMuteState = isMutedRef.current;
+                        camStream.getAudioTracks().forEach(track => {
+                            track.enabled = !currentMuteState;
+                        });
+
+                        const camVideoTrack = camStream.getVideoTracks()[0];
+                        peersRef.current.forEach((peer) => {
+                            const videoSender = peer.getSenders().find(s => s.track?.kind === 'video');
+                            if (videoSender && camVideoTrack) {
+                                videoSender.replaceTrack(camVideoTrack);
+                            }
+                        });
+
+                        setLocalStream(camStream);
+                        localStreamRef.current = camStream;
+                    } catch (err) {
+                        console.warn("[WebRTC] Não foi possível re-adquirir câmera após compartilhamento de tela:", err);
+                    }
+                }
+            };
+        } catch (err) {
+            console.error("[WebRTC] Erro ao iniciar compartilhamento de tela:", err);
+        }
     }, []);
 
     const sendMessage = useCallback(async (messageId: string, userName: string, text: string, channelId: string, attachmentUrl?: string | null) => {

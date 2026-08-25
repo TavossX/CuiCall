@@ -47,10 +47,11 @@ function VideoTile({
     }, [entry.stream]);
 
     const showVideo = entry.stream && !entry.isCamOff;
+    const viewClass = entry.isScreenSharing ? 'screen-share-view' : 'webcam-view';
 
     return (
         <div
-            className={`video-tile ${isFocused ? 'video-tile--active' : ''}`}
+            className={`video-tile ${isFocused ? 'video-tile--active' : ''} ${viewClass}`}
             onClick={isFocused ? onUnfocus : onFocus}
         >
             {/* Focus/Unfocus button */}
@@ -80,6 +81,7 @@ function VideoTile({
                     autoPlay
                     muted={entry.isLocal}
                     playsInline
+                    className={viewClass}
                 />
             ) : (
                 <div className="video-tile__avatar-container">

@@ -12,6 +12,7 @@ export interface FriendProfile {
     id: string;
     email: string;
     username: string;
+    display_name?: string;
     avatar_url?: string;
 }
 
@@ -71,11 +72,17 @@ export const FriendsView = ({
                 if (partnerIds.length > 0) {
                     const { data: profilesData } = await supabase
                         .from('profiles')
-                        .select('id, email, username, avatar_url')
+                        .select('*')
                         .in('id', partnerIds);
 
                     if (profilesData) {
-                        profilesMap = profilesData.reduce((acc, p) => ({ ...acc, [p.id]: p }), {});
+                        profilesMap = profilesData.reduce((acc, p: any) => ({
+                            ...acc,
+                            [p.id]: {
+                                ...p,
+                                username: p.display_name || p.username || p.email?.split('@')[0] || p.id.slice(0, 8),
+                            },
+                        }), {});
                     }
                 }
 
@@ -140,7 +147,7 @@ export const FriendsView = ({
             // Busca o perfil pelo e-mail ou pelo id
             const { data: targetProfile, error: searchErr } = await supabase
                 .from('profiles')
-                .select('id, email, username')
+                .select('*')
                 .or(`email.ilike.${query},id.eq.${query}`)
                 .maybeSingle();
 
@@ -154,6 +161,8 @@ export const FriendsView = ({
                 });
                 return;
             }
+
+            const targetName = (targetProfile as any).display_name || (targetProfile as any).username || (targetProfile as any).email;
 
             if (targetProfile.id === currentUserId) {
                 toast({
@@ -196,7 +205,7 @@ export const FriendsView = ({
 
             toast({
                 title: 'Solicitação enviada!',
-                description: `Pedido de amizade enviado para ${targetProfile.username || targetProfile.email}.`,
+                description: `Pedido de amizade enviado para ${targetName}.`,
                 status: 'success',
                 duration: 3000,
                 isClosable: true,

@@ -116,11 +116,14 @@ function App() {
                 );
                 const { data: profiles } = await supabase
                     .from('profiles')
-                    .select('id, email, username, avatar_url')
+                    .select('*')
                     .in('id', partnerIds);
 
                 if (profiles) {
-                    setSidebarFriends(profiles);
+                    setSidebarFriends(profiles.map((p: any) => ({
+                        ...p,
+                        username: p.display_name || p.username || p.email?.split('@')[0] || p.id.slice(0, 8),
+                    })));
                 }
             } else {
                 setSidebarFriends([]);

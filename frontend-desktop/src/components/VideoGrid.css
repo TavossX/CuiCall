@@ -112,9 +112,22 @@
 .video-tile video {
     width: 100%;
     height: 100%;
-    object-fit: contain;
     display: block;
-    background: #000;
+}
+
+/* Webcam view: preenche o tile sem achatar (corta os excessos laterais/verticais) */
+.webcam-view,
+video.webcam-view,
+.video-tile.webcam-view video {
+    object-fit: cover;
+}
+
+/* Screen share view: mantém aspecto original 100% visível, com faixas pretas */
+.screen-share-view,
+video.screen-share-view,
+.video-tile.screen-share-view video {
+    object-fit: contain;
+    background-color: #000;
 }
 
 /* Camera off state */
