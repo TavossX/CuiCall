@@ -15,35 +15,47 @@ const FALLBACK_ICE_CONFIG: RTCConfiguration = {
 // Cache para evitar chamadas repetidas à Twilio (TTL: 5 minutos)
 let cachedIceConfig: RTCConfiguration | null = null;
 let cacheTimestamp = 0;
+let iceServersPromise: Promise<RTCConfiguration> | null = null;
 const ICE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Busca credenciais TURN efêmeras do backend (Twilio).
  * Retorna STUN públicos do Google como fallback.
+ * Utiliza promessa singleton para evitar chamadas HTTP concorrentes duplicadas.
  */
-const fetchIceServers = async (): Promise<RTCConfiguration> => {
+const fetchIceServers = (): Promise<RTCConfiguration> => {
     if (cachedIceConfig && Date.now() - cacheTimestamp < ICE_CACHE_TTL_MS) {
-        return cachedIceConfig;
+        return Promise.resolve(cachedIceConfig);
     }
+    if (iceServersPromise) return iceServersPromise;
 
-    try {
-        const backendUrl = (import.meta.env.VITE_SIGNALR_URL || 'http://localhost:5222/callHub')
-            .replace('/callHub', '');
-        const response = await fetch(`${backendUrl}/api/ice-servers`);
-        const data = await response.json();
+    iceServersPromise = (async () => {
+        try {
+            const backendUrl = (import.meta.env.VITE_SIGNALR_URL || 'http://localhost:5222/callHub')
+                .replace('/callHub', '');
+            const response = await fetch(`${backendUrl}/api/ice-servers`);
+            const data = await response.json();
 
-        if (data?.iceServers?.length) {
-            cachedIceConfig = { iceServers: data.iceServers };
-            cacheTimestamp = Date.now();
-            console.log(`[WebRTC 🧊] ICE servers obtidos do backend (${data.iceServers.length} servers, inclui TURN)`);
-            return cachedIceConfig;
+            if (data?.iceServers?.length) {
+                cachedIceConfig = { iceServers: data.iceServers };
+                cacheTimestamp = Date.now();
+                console.log(`[WebRTC 🧊] ICE servers obtidos do backend (${data.iceServers.length} servers, inclui TURN)`);
+                return cachedIceConfig;
+            }
+        } catch (err) {
+            console.warn('[WebRTC ⚠️] Falha ao buscar ICE servers do backend. Usando STUN fallback.', err);
+        } finally {
+            iceServersPromise = null;
         }
-    } catch (err) {
-        console.warn('[WebRTC ⚠️] Falha ao buscar ICE servers do backend. Usando STUN fallback.', err);
-    }
 
-    return FALLBACK_ICE_CONFIG;
+        return FALLBACK_ICE_CONFIG;
+    })();
+
+    return iceServersPromise;
 };
+
+// Pré-carrega ICE servers na inicialização da aplicação
+fetchIceServers();
 
 const DEFAULT_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
     width: { ideal: 1280, max: 1280 },
@@ -233,6 +245,7 @@ export const useWebRTC = () => {
 
     const connectionRef = useRef<signalR.HubConnection | null>(null);
     const peersRef = useRef(new Map<string, RTCPeerConnection>());
+    const candidateQueueRef = useRef(new Map<string, RTCIceCandidateInit[]>());
     const localStreamRef = useRef<MediaStream | null>(null);
     const voiceRoomIdRef = useRef<string | null>(null);
     const currentChannelIdRef = useRef<string | null>(null);
@@ -319,12 +332,28 @@ export const useWebRTC = () => {
 
     // ═══════ Peer Connection Factory ═══════
 
+    const processQueuedCandidates = useCallback(async (peerId: string, peer: RTCPeerConnection) => {
+        const queue = candidateQueueRef.current.get(peerId);
+        if (queue && queue.length > 0) {
+            console.log(`[WebRTC 🧊] Processando ${queue.length} ICE candidates da fila para ${peerId}`);
+            for (const candidate of queue) {
+                try {
+                    await peer.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (e) {
+                    console.warn(`[WebRTC ⚠️] Erro ao adicionar ICE candidate da fila para ${peerId}:`, e);
+                }
+            }
+            candidateQueueRef.current.delete(peerId);
+        }
+    }, []);
+
     const createPeerForUser = useCallback(async (remotePeerId: string): Promise<RTCPeerConnection> => {
         const existing = peersRef.current.get(remotePeerId);
         if (existing) {
             existing.close();
             peersRef.current.delete(remotePeerId);
         }
+        candidateQueueRef.current.delete(remotePeerId);
 
         const iceConfig = await fetchIceServers();
         const peer = new RTCPeerConnection(iceConfig);
@@ -435,8 +464,28 @@ export const useWebRTC = () => {
                 }
             });
 
-            hub.on("ExistingMembers", (_memberIds: string[], _roomId: string) => {
-                console.log(`[WebRTC 👥] Membros existentes na sala (${_roomId}):`, _memberIds);
+            hub.on("ExistingMembers", async (memberIds: string[], _roomId: string) => {
+                console.log(`[WebRTC 👥] Membros existentes na sala (${_roomId}):`, memberIds);
+                const currentVoiceRoom = voiceRoomIdRef.current;
+                if (!currentVoiceRoom) return;
+
+                for (const memberId of memberIds) {
+                    if (!peersRef.current.has(memberId)) {
+                        try {
+                            console.log(`[WebRTC 📞] Criando peer antecipado para membro existente: ${memberId}`);
+                            const peer = await createPeerForUser(memberId);
+                            const offer = await peer.createOffer();
+                            await peer.setLocalDescription(offer);
+                            await hub.invoke(
+                                "SendSignalToUser",
+                                JSON.stringify({ type: 'offer', sdp: offer }),
+                                memberId
+                            );
+                        } catch (err) {
+                            console.error(`[WebRTC ❌] Erro ao enviar offer para membro existente ${memberId}:`, err);
+                        }
+                    }
+                }
             });
 
             hub.on("ReceiveSignal", async (senderId: string, signal: string) => {
@@ -450,6 +499,7 @@ export const useWebRTC = () => {
                         console.log(`[WebRTC 📥] Recebido Offer de ${senderId}. Criando Answer...`);
                         const peer = await createPeerForUser(senderId);
                         await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                        await processQueuedCandidates(senderId, peer);
                         const answer = await peer.createAnswer();
                         await peer.setLocalDescription(answer);
                         await hub.invoke(
@@ -463,11 +513,17 @@ export const useWebRTC = () => {
                         const peer = peersRef.current.get(senderId);
                         if (peer) {
                             await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                            await processQueuedCandidates(senderId, peer);
                         }
                     } else if (data.candidate) {
                         const peer = peersRef.current.get(senderId);
-                        if (peer) {
+                        if (peer && peer.remoteDescription) {
                             await peer.addIceCandidate(new RTCIceCandidate(data.candidate));
+                        } else {
+                            const queue = candidateQueueRef.current.get(senderId) || [];
+                            queue.push(data.candidate);
+                            candidateQueueRef.current.set(senderId, queue);
+                            console.log(`[WebRTC 🧊] Candidate recebido antes de remoteDescription de ${senderId}. Em fila (total: ${queue.length}).`);
                         }
                     }
                 } catch (err) {
@@ -527,11 +583,12 @@ export const useWebRTC = () => {
             });
 
             // ── Chat de Servidor ──
-            hub.on("ReceiveMessage", (senderId: string, text: string, roomId?: string, attachmentUrl?: string) => {
+            hub.on("ReceiveMessage", (messageId: string, senderId: string, text: string, roomId?: string, attachmentUrl?: string) => {
                 const targetChannel = roomId || currentChannelIdRef.current || voiceRoomIdRef.current || 'cuicall-geral';
-                console.log(`[Chat 💬] Canal ${targetChannel} | De: ${senderId} | Anexo: ${attachmentUrl ? 'Sim' : 'Não'}`);
+                console.log(`[Chat 💬] Canal ${targetChannel} | De: ${senderId} | Texto: ${text} | Anexo: ${attachmentUrl ? 'Sim' : 'Não'}`);
                 
                 const newMsg = {
+                    id: messageId,
                     senderId,
                     text,
                     attachment_url: attachmentUrl || null
