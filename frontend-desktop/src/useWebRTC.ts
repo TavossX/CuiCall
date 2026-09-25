@@ -4,11 +4,45 @@ import { appendMessageToCache, getDMCacheKey } from './utils/chatCache';
 import { usePushToTalk } from './usePushToTalk';
 import { createProcessedAudioStream, ProcessedAudioResult } from './utils/audioProcessor';
 
-const STUN_SERVERS: RTCConfiguration = {
+// Fallback caso o endpoint /api/ice-servers não responda
+const FALLBACK_ICE_CONFIG: RTCConfiguration = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' }
     ],
+};
+
+// Cache para evitar chamadas repetidas à Twilio (TTL: 5 minutos)
+let cachedIceConfig: RTCConfiguration | null = null;
+let cacheTimestamp = 0;
+const ICE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Busca credenciais TURN efêmeras do backend (Twilio).
+ * Retorna STUN públicos do Google como fallback.
+ */
+const fetchIceServers = async (): Promise<RTCConfiguration> => {
+    if (cachedIceConfig && Date.now() - cacheTimestamp < ICE_CACHE_TTL_MS) {
+        return cachedIceConfig;
+    }
+
+    try {
+        const backendUrl = (import.meta.env.VITE_SIGNALR_URL || 'http://localhost:5222/callHub')
+            .replace('/callHub', '');
+        const response = await fetch(`${backendUrl}/api/ice-servers`);
+        const data = await response.json();
+
+        if (data?.iceServers?.length) {
+            cachedIceConfig = { iceServers: data.iceServers };
+            cacheTimestamp = Date.now();
+            console.log(`[WebRTC 🧊] ICE servers obtidos do backend (${data.iceServers.length} servers, inclui TURN)`);
+            return cachedIceConfig;
+        }
+    } catch (err) {
+        console.warn('[WebRTC ⚠️] Falha ao buscar ICE servers do backend. Usando STUN fallback.', err);
+    }
+
+    return FALLBACK_ICE_CONFIG;
 };
 
 const DEFAULT_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
@@ -285,14 +319,15 @@ export const useWebRTC = () => {
 
     // ═══════ Peer Connection Factory ═══════
 
-    const createPeerForUser = useCallback((remotePeerId: string): RTCPeerConnection => {
+    const createPeerForUser = useCallback(async (remotePeerId: string): Promise<RTCPeerConnection> => {
         const existing = peersRef.current.get(remotePeerId);
         if (existing) {
             existing.close();
             peersRef.current.delete(remotePeerId);
         }
 
-        const peer = new RTCPeerConnection(STUN_SERVERS);
+        const iceConfig = await fetchIceServers();
+        const peer = new RTCPeerConnection(iceConfig);
         peersRef.current.set(remotePeerId, peer);
 
         peer.onicecandidate = (event) => {
@@ -386,7 +421,7 @@ export const useWebRTC = () => {
 
                 try {
                     console.log(`[WebRTC 📞] Criando RTCPeerConnection e Offer para peer: ${connectionId}`);
-                    const peer = createPeerForUser(connectionId);
+                    const peer = await createPeerForUser(connectionId);
                     const offer = await peer.createOffer();
                     await peer.setLocalDescription(offer);
                     await hub.invoke(
@@ -413,7 +448,7 @@ export const useWebRTC = () => {
 
                     if (data.type === 'offer') {
                         console.log(`[WebRTC 📥] Recebido Offer de ${senderId}. Criando Answer...`);
-                        const peer = createPeerForUser(senderId);
+                        const peer = await createPeerForUser(senderId);
                         await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
                         const answer = await peer.createAnswer();
                         await peer.setLocalDescription(answer);
