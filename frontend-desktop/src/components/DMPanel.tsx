@@ -65,7 +65,7 @@ export const DMPanel = ({
                 .order('created_at', { ascending: true });
 
             if (!error && data) {
-                const partnerName = targetFriend.display_name || targetFriend.username || targetFriend.email?.split('@')[0] || targetFriend.id.slice(0, 8);
+                const partnerName = targetFriend.display_name || targetFriend.username || targetFriend.id.slice(0, 8);
                 const formatted: ChatMessage[] = data.map((m: any) => {
                     let text = m.text || m.content || '';
                     let attachment = m.attachment_url || null;
@@ -95,7 +95,7 @@ export const DMPanel = ({
         } finally {
             setLoading(false);
         }
-    }, [currentUserId, targetFriend.id, targetFriend.username, targetFriend.display_name, targetFriend.email, currentUserName, loadMessages]);
+    }, [currentUserId, targetFriend.id, targetFriend.username, targetFriend.display_name, currentUserName, loadMessages]);
 
     useEffect(() => {
         fetchDMHistory();
@@ -109,13 +109,8 @@ export const DMPanel = ({
         // Reset input
         e.target.value = '';
 
-        if (!file.type.startsWith('image/')) {
-            toast({ title: 'Formato não suportado', description: 'Por favor, envie apenas imagens (PNG, JPG, GIF, WebP).', status: 'warning' });
-            return;
-        }
-
         if (file.size > 10 * 1024 * 1024) {
-            toast({ title: 'Arquivo muito grande', description: 'O tamanho máximo é 10MB.', status: 'warning' });
+            toast({ title: 'Arquivo muito grande', description: 'O tamanho máximo do anexo é 10MB.', status: 'warning' });
             return;
         }
 
@@ -124,13 +119,13 @@ export const DMPanel = ({
         try {
             const fileExt = file.name.split('.').pop() || 'png';
             const fileName = `dm-${currentUserId}-${Date.now()}.${fileExt}`;
-
+            
             let bucketName = 'chat_attachments';
             let { error: uploadError } = await supabase.storage
                 .from(bucketName)
                 .upload(fileName, file, { upsert: true });
 
-            // Se o bucket chat_attachments não existir, tenta o bucket images
+            // Se o bucket chat_attachments não existir, tenta o bucket 'images'
             if (uploadError && uploadError.message?.toLowerCase().includes('bucket not found')) {
                 bucketName = 'images';
                 const retryUpload = await supabase.storage
@@ -139,37 +134,31 @@ export const DMPanel = ({
                 uploadError = retryUpload.error;
             }
 
-            if (uploadError) {
-                console.error('Erro no upload para storage:', uploadError);
-                toast({ title: 'Erro no envio do anexo', description: uploadError.message, status: 'error' });
-                return;
-            }
+            if (uploadError) throw uploadError;
 
             const { data } = supabase.storage.from(bucketName).getPublicUrl(fileName);
             const attachmentUrl = data.publicUrl;
 
-            // Salva no banco com o anexo
-            const textContent = inputText.trim();
+            // Envia para o Supabase
             let { data: insertedMsg, error: insertError } = await supabase
                 .from('direct_messages')
                 .insert([{
                     sender_id: currentUserId,
                     receiver_id: targetFriend.id,
-                    text: textContent,
-                    attachment_url: attachmentUrl
+                    content: '',
+                    attachment_url: attachmentUrl,
                 }])
                 .select()
                 .single();
 
-            // Fallback se a coluna attachment_url não existir no schema da tabela direct_messages
+            // Fallback: se a coluna attachment_url não existir, insere o link na coluna text/content
             if (insertError && (insertError.message.includes('attachment_url') || insertError.message.includes('column'))) {
-                const fallbackText = textContent ? `${textContent}\n${attachmentUrl}` : attachmentUrl;
                 const retry = await supabase
                     .from('direct_messages')
                     .insert([{
                         sender_id: currentUserId,
                         receiver_id: targetFriend.id,
-                        text: fallbackText
+                        content: attachmentUrl,
                     }])
                     .select()
                     .single();
@@ -179,64 +168,58 @@ export const DMPanel = ({
 
             if (insertError) throw insertError;
 
-            setInputText('');
+            // Envia evento P2P / SignalR
+            onSendMessage(targetFriend.id, '', { attachmentUrl });
 
-            // Dispara SignalR
-            onSendMessage(targetFriend.id, textContent, {
-                id: insertedMsg?.id,
-                senderName: currentUserName,
-                attachment_url: attachmentUrl,
-                created_at: insertedMsg?.created_at,
-            });
-
-            // Atualiza local
+            // Atualiza UI local
             const newMsg: ChatMessage = {
-                id: insertedMsg?.id,
+                id: insertedMsg?.id || String(Date.now()),
                 senderId: currentUserName,
-                text: textContent,
+                text: '',
                 attachment_url: attachmentUrl,
-                created_at: insertedMsg?.created_at,
+                created_at: new Date().toISOString(),
             };
             loadMessages(targetFriend.id, [...(messages || []), newMsg]);
-
         } catch (err: any) {
-            console.error('Erro ao enviar imagem DM:', err);
-            toast({ title: 'Erro ao enviar imagem', description: err.message, status: 'error' });
+            console.error('Erro ao enviar imagem na DM:', err);
+            toast({ title: 'Erro ao enviar anexo', description: err.message, status: 'error' });
         } finally {
             setIsUploading(false);
         }
     };
 
-    // Envio de nova mensagem direta
-    const handleSend = async () => {
-        const text = inputText.trim();
-        if (!text || !currentUserId || !targetFriend.id || isUploading) return;
+    const handleSend = async (e?: React.FormEvent) => {
+        if (e) e.preventDefault();
+        const trimmed = inputText.trim();
+        if (!trimmed || !currentUserId || !targetFriend.id) return;
 
         setInputText('');
 
         try {
-            // 1. Salva no banco de dados Supabase
-            const { data: insertedMsg, error } = await supabase
+            // 1ª Tentativa: Grava no Supabase na tabela direct_messages
+            const { data: insertedMsg, error: insertError } = await supabase
                 .from('direct_messages')
-                .insert([{ sender_id: currentUserId, receiver_id: targetFriend.id, text }])
+                .insert([{
+                    sender_id: currentUserId,
+                    receiver_id: targetFriend.id,
+                    content: trimmed,
+                }])
                 .select()
                 .single();
 
-            if (error) throw error;
+            if (insertError) {
+                console.warn('Erro ao salvar DM no Supabase (continuando via P2P):', insertError);
+            }
 
-            // 2. Dispara sinalização em tempo real via SignalR
-            onSendMessage(targetFriend.id, text, {
-                id: insertedMsg?.id,
-                senderName: currentUserName,
-                created_at: insertedMsg?.created_at,
-            });
+            // Envia evento P2P / SignalR
+            onSendMessage(targetFriend.id, trimmed);
 
-            // 3. Atualiza localmente
+            // Atualiza estado local de mensagens
             const newMsg: ChatMessage = {
-                id: insertedMsg?.id,
+                id: insertedMsg?.id || String(Date.now()),
                 senderId: currentUserName,
-                text,
-                created_at: insertedMsg?.created_at,
+                text: trimmed,
+                created_at: new Date().toISOString(),
             };
             loadMessages(targetFriend.id, [...(messages || []), newMsg]);
         } catch (err) {
@@ -244,7 +227,7 @@ export const DMPanel = ({
         }
     };
 
-    const friendDisplayName = targetFriend.username || targetFriend.email.split('@')[0];
+    const friendDisplayName = targetFriend.display_name || targetFriend.username || targetFriend.id.slice(0, 8);
 
     return (
         <Flex flex="1" flexDir="column" bg="gray.700" overflow="hidden">
@@ -277,7 +260,7 @@ export const DMPanel = ({
                             @{friendDisplayName}
                         </Text>
                         <Text fontSize="10px" color="gray.400">
-                            {targetFriend.email}
+                            {targetFriend.display_name ? `ID: ${targetFriend.id.slice(0, 8)}` : ''}
                         </Text>
                     </Box>
                 </HStack>

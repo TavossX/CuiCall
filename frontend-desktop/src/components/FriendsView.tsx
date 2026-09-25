@@ -10,10 +10,10 @@ import { KuiAvatarIcon } from './KuiAvatar';
 
 export interface FriendProfile {
     id: string;
-    email: string;
-    username: string;
     display_name?: string;
     avatar_url?: string;
+    username?: string;
+    email?: string;
 }
 
 export interface FriendshipItem {
@@ -72,15 +72,17 @@ export const FriendsView = ({
                 if (partnerIds.length > 0) {
                     const { data: profilesData } = await supabase
                         .from('profiles')
-                        .select('*')
+                        .select('id, display_name, avatar_url')
                         .in('id', partnerIds);
 
                     if (profilesData) {
                         profilesMap = profilesData.reduce((acc, p: any) => ({
                             ...acc,
                             [p.id]: {
-                                ...p,
-                                username: p.display_name || p.username || p.email?.split('@')[0] || p.id.slice(0, 8),
+                                id: p.id,
+                                display_name: p.display_name,
+                                avatar_url: p.avatar_url,
+                                username: p.display_name || p.id.slice(0, 8),
                             },
                         }), {});
                     }
@@ -93,7 +95,7 @@ export const FriendsView = ({
                     const partnerId = f.requester_id === currentUserId ? f.addressee_id : f.requester_id;
                     const partnerProfile = profilesMap[partnerId] || {
                         id: partnerId,
-                        email: 'usuario@cuicall.app',
+                        display_name: partnerId.slice(0, 8),
                         username: partnerId.slice(0, 8),
                     };
 
@@ -137,9 +139,9 @@ export const FriendsView = ({
         };
     }, [fetchFriendships]);
 
-    // Enviar solicitação de amizade por e-mail ou UUID
+    // Enviar solicitação de amizade por nome de exibição ou UUID
     const handleSendRequest = async () => {
-        const query = searchQuery.trim().toLowerCase();
+        const query = searchQuery.trim();
         if (!query) return;
 
         setSearchLoading(true);
@@ -151,47 +153,27 @@ export const FriendsView = ({
             if (isUuid) {
                 const res = await supabase
                     .from('profiles')
-                    .select('*')
+                    .select('id, display_name, avatar_url')
                     .eq('id', query)
                     .maybeSingle();
                 targetProfile = res.data;
                 searchErr = res.error;
             } else {
-                // Busca por e-mail
-                const resEmail = await supabase
+                // Busca por display_name (case-insensitive)
+                const resDisplay = await supabase
                     .from('profiles')
-                    .select('*')
-                    .ilike('email', query)
+                    .select('id, display_name, avatar_url')
+                    .ilike('display_name', query)
                     .maybeSingle();
-                
-                targetProfile = resEmail.data;
-                searchErr = resEmail.error;
 
-                // Se não encontrar por e-mail exato, busca por display_name ou username
-                if (!targetProfile && !searchErr) {
-                    const resDisplay = await supabase
-                        .from('profiles')
-                        .select('*')
-                        .ilike('display_name', query)
-                        .maybeSingle();
-
-                    if (!resDisplay.error && resDisplay.data) {
-                        targetProfile = resDisplay.data;
-                    } else {
-                        const resUser = await supabase
-                            .from('profiles')
-                            .select('*')
-                            .ilike('username', query)
-                            .maybeSingle();
-                        targetProfile = resUser.data;
-                    }
-                }
+                targetProfile = resDisplay.data;
+                searchErr = resDisplay.error;
             }
 
             if (searchErr || !targetProfile) {
                 toast({
                     title: 'Usuário não encontrado',
-                    description: 'Verifique se o e-mail, nome de exibição ou ID foi digitado corretamente.',
+                    description: 'Verifique se o nome de exibição ou ID foi digitado corretamente.',
                     status: 'error',
                     duration: 3000,
                     isClosable: true,
@@ -199,7 +181,7 @@ export const FriendsView = ({
                 return;
             }
 
-            const targetName = (targetProfile as any).display_name || (targetProfile as any).username || (targetProfile as any).email;
+            const targetName = targetProfile.display_name || targetProfile.id.slice(0, 8);
 
             if (targetProfile.id === currentUserId) {
                 toast({
@@ -280,7 +262,7 @@ export const FriendsView = ({
 
             toast({
                 title: 'Amizade aceita!',
-                description: `Agora você e ${item.profile.username || item.profile.email} são amigos.`,
+                description: `Agora você e ${item.profile.display_name || item.profile.username} são amigos.`,
                 status: 'success',
                 duration: 2500,
                 isClosable: true,
@@ -370,63 +352,66 @@ export const FriendsView = ({
                                         <Box as={BsPersonPlusFill} fontSize="48px" opacity={0.4} />
                                         <Text fontSize="md">Nenhum amigo adicionado ainda.</Text>
                                         <Button size="sm" colorScheme="green" onClick={() => setTabIndex(2)}>
-                                            Adicionar seu primeiro amigo
+                                             Adicionar seu primeiro amigo
                                         </Button>
                                     </Flex>
                                 ) : (
-                                    friends.map(friend => (
-                                        <Flex
-                                            key={friend.id}
-                                            align="center" justify="space-between"
-                                            p={3} borderRadius="lg" bg="gray.800"
-                                            _hover={{ bg: 'gray.750' }} transition="all 0.15s"
-                                            border="1px solid" borderColor="gray.650"
-                                        >
-                                            <HStack spacing={3}>
-                                                <Box position="relative">
-                                                    <Avatar
-                                                        size="md"
-                                                        name={friend.profile.username || friend.profile.email}
-                                                        src={friend.profile.avatar_url}
-                                                        bg={getAvatarColor(friend.profile.id)}
-                                                        icon={<KuiAvatarIcon fill={getAvatarColor(friend.profile.id)} />}
-                                                    />
-                                                    <Box position="absolute" bottom="-1px" right="-1px" w="12px" h="12px" borderRadius="full" bg="green.400" border="2px solid" borderColor="gray.800" />
-                                                </Box>
-                                                <Box>
-                                                    <Text fontWeight="bold" color="white" fontSize="sm">
-                                                        {friend.profile.username || friend.profile.email.split('@')[0]}
-                                                    </Text>
-                                                    <Text fontSize="xs" color="gray.400">
-                                                        {friend.profile.email}
-                                                    </Text>
-                                                </Box>
-                                            </HStack>
+                                    friends.map(friend => {
+                                        const name = friend.profile.display_name || friend.profile.username || friend.profile.id.slice(0, 8);
+                                        return (
+                                            <Flex
+                                                key={friend.id}
+                                                align="center" justify="space-between"
+                                                p={3} borderRadius="lg" bg="gray.800"
+                                                _hover={{ bg: 'gray.750' }} transition="all 0.15s"
+                                                border="1px solid" borderColor="gray.650"
+                                            >
+                                                <HStack spacing={3}>
+                                                    <Box position="relative">
+                                                        <Avatar
+                                                            size="md"
+                                                            name={name}
+                                                            src={friend.profile.avatar_url}
+                                                            bg={getAvatarColor(friend.profile.id)}
+                                                            icon={<KuiAvatarIcon fill={getAvatarColor(friend.profile.id)} />}
+                                                        />
+                                                        <Box position="absolute" bottom="-1px" right="-1px" w="12px" h="12px" borderRadius="full" bg="green.400" border="2px solid" borderColor="gray.800" />
+                                                    </Box>
+                                                    <Box>
+                                                        <Text fontWeight="bold" color="white" fontSize="sm">
+                                                            {name}
+                                                        </Text>
+                                                        <Text fontSize="xs" color="gray.400">
+                                                            {friend.profile.display_name ? `@${friend.profile.display_name}` : friend.profile.id.slice(0, 8)}
+                                                        </Text>
+                                                    </Box>
+                                                </HStack>
 
-                                            <HStack spacing={2}>
-                                                <Tooltip label="Iniciar Conversa (DM)">
-                                                    <IconButton
-                                                        aria-label="Abrir DM"
-                                                        icon={<BsChatDotsFill />}
-                                                        colorScheme="blue"
-                                                        size="sm"
-                                                        onClick={() => onSelectFriend(friend.profile)}
-                                                    />
-                                                </Tooltip>
-                                                <Tooltip label="Remover Amizade">
-                                                    <IconButton
-                                                        aria-label="Remover"
-                                                        icon={<BsXLg />}
-                                                        variant="ghost"
-                                                        color="gray.400"
-                                                        _hover={{ color: 'red.400', bg: 'gray.700' }}
-                                                        size="sm"
-                                                        onClick={() => handleRemoveOrReject(friend)}
-                                                    />
-                                                </Tooltip>
-                                            </HStack>
-                                        </Flex>
-                                    ))
+                                                <HStack spacing={2}>
+                                                    <Tooltip label="Iniciar Conversa (DM)">
+                                                        <IconButton
+                                                            aria-label="Abrir DM"
+                                                            icon={<BsChatDotsFill />}
+                                                            colorScheme="blue"
+                                                            size="sm"
+                                                            onClick={() => onSelectFriend(friend.profile)}
+                                                        />
+                                                    </Tooltip>
+                                                    <Tooltip label="Remover Amizade">
+                                                        <IconButton
+                                                            aria-label="Remover"
+                                                            icon={<BsXLg />}
+                                                            variant="ghost"
+                                                            color="gray.400"
+                                                            _hover={{ color: 'red.400', bg: 'gray.700' }}
+                                                            size="sm"
+                                                            onClick={() => handleRemoveOrReject(friend)}
+                                                        />
+                                                    </Tooltip>
+                                                </HStack>
+                                            </Flex>
+                                        );
+                                    })
                                 )}
                             </VStack>
                         </TabPanel>
@@ -444,75 +429,78 @@ export const FriendsView = ({
                                         <Text fontSize="sm">Não há pedidos de amizade pendentes no momento.</Text>
                                     </Flex>
                                 ) : (
-                                    pendingRequests.map(item => (
-                                        <Flex
-                                            key={item.id}
-                                            align="center" justify="space-between"
-                                            p={3} borderRadius="lg" bg="gray.800"
-                                            border="1px solid" borderColor="gray.650"
-                                        >
-                                            <HStack spacing={3}>
-                                                <Avatar
-                                                    size="md"
-                                                    name={item.profile.username || item.profile.email}
-                                                    src={item.profile.avatar_url}
-                                                    bg={getAvatarColor(item.profile.id)}
-                                                    icon={<KuiAvatarIcon fill={getAvatarColor(item.profile.id)} />}
-                                                />
-                                                <Box>
-                                                    <HStack spacing={2}>
-                                                        <Text fontWeight="bold" color="white" fontSize="sm">
-                                                            {item.profile.username || item.profile.email.split('@')[0]}
+                                    pendingRequests.map(item => {
+                                        const name = item.profile.display_name || item.profile.username || item.profile.id.slice(0, 8);
+                                        return (
+                                            <Flex
+                                                key={item.id}
+                                                align="center" justify="space-between"
+                                                p={3} borderRadius="lg" bg="gray.800"
+                                                border="1px solid" borderColor="gray.650"
+                                            >
+                                                <HStack spacing={3}>
+                                                    <Avatar
+                                                        size="md"
+                                                        name={name}
+                                                        src={item.profile.avatar_url}
+                                                        bg={getAvatarColor(item.profile.id)}
+                                                        icon={<KuiAvatarIcon fill={getAvatarColor(item.profile.id)} />}
+                                                    />
+                                                    <Box>
+                                                        <HStack spacing={2}>
+                                                            <Text fontWeight="bold" color="white" fontSize="sm">
+                                                                {name}
+                                                            </Text>
+                                                            <Badge colorScheme={item.isIncoming ? 'green' : 'gray'} fontSize="2xs">
+                                                                {item.isIncoming ? 'Recebido' : 'Enviado'}
+                                                            </Badge>
+                                                        </HStack>
+                                                        <Text fontSize="xs" color="gray.400">
+                                                            {item.profile.display_name ? `@${item.profile.display_name}` : item.profile.id.slice(0, 8)}
                                                         </Text>
-                                                        <Badge colorScheme={item.isIncoming ? 'green' : 'gray'} fontSize="2xs">
-                                                            {item.isIncoming ? 'Recebido' : 'Enviado'}
-                                                        </Badge>
-                                                    </HStack>
-                                                    <Text fontSize="xs" color="gray.400">
-                                                        {item.profile.email}
-                                                    </Text>
-                                                </Box>
-                                            </HStack>
+                                                    </Box>
+                                                </HStack>
 
-                                            <HStack spacing={2}>
-                                                {item.isIncoming ? (
-                                                    <>
-                                                        <Tooltip label="Aceitar Pedido">
+                                                <HStack spacing={2}>
+                                                    {item.isIncoming ? (
+                                                        <>
+                                                            <Tooltip label="Aceitar Pedido">
+                                                                <IconButton
+                                                                    aria-label="Aceitar"
+                                                                    icon={<BsCheckLg />}
+                                                                    colorScheme="green"
+                                                                    size="sm"
+                                                                    onClick={() => handleAccept(item)}
+                                                                />
+                                                            </Tooltip>
+                                                            <Tooltip label="Recusar Pedido">
+                                                                <IconButton
+                                                                    aria-label="Recusar"
+                                                                    icon={<BsXLg />}
+                                                                    colorScheme="red"
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    onClick={() => handleRemoveOrReject(item)}
+                                                                />
+                                                            </Tooltip>
+                                                        </>
+                                                    ) : (
+                                                        <Tooltip label="Cancelar Solicitação">
                                                             <IconButton
-                                                                aria-label="Aceitar"
-                                                                icon={<BsCheckLg />}
-                                                                colorScheme="green"
-                                                                size="sm"
-                                                                onClick={() => handleAccept(item)}
-                                                            />
-                                                        </Tooltip>
-                                                        <Tooltip label="Recusar Pedido">
-                                                            <IconButton
-                                                                aria-label="Recusar"
+                                                                aria-label="Cancelar"
                                                                 icon={<BsXLg />}
-                                                                colorScheme="red"
-                                                                variant="outline"
+                                                                variant="ghost"
+                                                                color="gray.400"
+                                                                _hover={{ color: 'red.400', bg: 'gray.700' }}
                                                                 size="sm"
                                                                 onClick={() => handleRemoveOrReject(item)}
                                                             />
                                                         </Tooltip>
-                                                    </>
-                                                ) : (
-                                                    <Tooltip label="Cancelar Solicitação">
-                                                        <IconButton
-                                                            aria-label="Cancelar"
-                                                            icon={<BsXLg />}
-                                                            variant="ghost"
-                                                            color="gray.400"
-                                                            _hover={{ color: 'red.400', bg: 'gray.700' }}
-                                                            size="sm"
-                                                            onClick={() => handleRemoveOrReject(item)}
-                                                        />
-                                                    </Tooltip>
-                                                )}
-                                            </HStack>
-                                        </Flex>
-                                    ))
+                                                    )}
+                                                </HStack>
+                                            </Flex>
+                                        );
+                                    })
                                 )}
                             </VStack>
                         </TabPanel>
@@ -522,12 +510,12 @@ export const FriendsView = ({
                             <Box maxW="600px">
                                 <Heading size="sm" color="white" mb={2}>Adicionar Amigo</Heading>
                                 <Text fontSize="sm" color="gray.400" mb={4}>
-                                    Você pode adicionar um amigo usando o e-mail ou o identificador único da conta dele.
+                                    Você pode adicionar um amigo usando o nome de exibição ou o identificador único (UUID) da conta dele.
                                 </Text>
 
                                 <HStack spacing={3}>
                                     <Input
-                                        placeholder="ex: amigo@exemplo.com ou UUID"
+                                        placeholder="ex: Nome do Amigo ou UUID"
                                         value={searchQuery}
                                         onChange={(e) => setSearchQuery(e.target.value)}
                                         onKeyDown={(e) => e.key === 'Enter' && handleSendRequest()}

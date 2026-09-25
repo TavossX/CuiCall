@@ -119,13 +119,13 @@ export function App() {
                 );
                 const { data: profiles } = await supabase
                     .from('profiles')
-                    .select('*')
+                    .select('id, display_name, avatar_url')
                     .in('id', partnerIds);
 
                 if (profiles) {
                     setSidebarFriends(profiles.map((p: any) => ({
                         ...p,
-                        username: p.display_name || p.username || p.email?.split('@')[0] || p.id.slice(0, 8),
+                        username: p.display_name || p.id.slice(0, 8),
                     })));
                 }
             } else {
@@ -686,7 +686,7 @@ export function App() {
                                 </Text>
                             ) : (
                                 sidebarFriends.map(friend => {
-                                    const friendName = friend.username || friend.email.split('@')[0];
+                                    const friendName = friend.display_name || friend.username || friend.id.slice(0, 8);
                                     const isSelected = activeFriend?.id === friend.id;
                                     return (
                                         <Flex
