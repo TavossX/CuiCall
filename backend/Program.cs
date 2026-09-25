@@ -7,6 +7,10 @@ Environment.SetEnvironmentVariable("DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE", "
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Google Cloud Run injeta a variável PORT; fallback para 8080 em ambiente local
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+builder.WebHost.UseUrls($"http://*:{port}");
+
 builder.Services.AddSignalR();
 builder.Services.AddHostedService<HeartbeatSweepService>();
 

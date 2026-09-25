@@ -1,24 +1,31 @@
-# Etapa 1: Build com o SDK do .NET 9
+# ============================================================
+# Dockerfile — CuiCall Signaling Server (Google Cloud Run)
+# Build context: ./backend
+# ============================================================
+
+# ---------- Etapa 1: Build ----------
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-# Copia o projeto e restaura dependencias a partir da raiz do repositorio
-COPY backend/backend.csproj ./backend/
-RUN dotnet restore ./backend/backend.csproj
+# Copia apenas o .csproj primeiro para aproveitar o cache de camadas do Docker
+COPY backend.csproj ./
+RUN dotnet restore backend.csproj
 
-# Copia o codigo-fonte do backend e publica
-COPY backend/ ./backend/
-WORKDIR /src/backend
+# Copia o restante do código-fonte e publica em modo Release
+COPY . ./
 RUN dotnet publish -c Release -o /app/publish /p:UseAppHost=false
 
-# Etapa 2: Runtime do ASP.NET Core 9
+# ---------- Etapa 2: Runtime ----------
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
 WORKDIR /app
 COPY --from=build /app/publish .
 
-# Otimizações para contêineres compartilhados no Render (evita erro de inotify / 128 limit)
-ENV ASPNETCORE_HTTP_PORTS=8080
+# --- Variáveis de Ambiente ---
+# PORT é injetada pelo Cloud Run em tempo de execução (padrão 8080)
+ENV PORT=8080
 ENV ASPNETCORE_ENVIRONMENT=Production
+
+# Otimizações para containers serverless
 ENV DOTNET_EnableDiagnostics=0
 ENV DOTNET_gcServer=0
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1

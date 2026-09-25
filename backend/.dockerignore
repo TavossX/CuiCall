@@ -3,3 +3,6 @@ obj/
 .git/
 .vs/
 .vscode/
+.dockerignore
+Dockerfile
+appsettings.Development.json
