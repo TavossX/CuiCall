@@ -108,6 +108,8 @@ export const EditServerModal = ({ isOpen, onClose, server, onServerUpdated }: Ed
                                 placeholder="Meu Servidor"
                                 value={name}
                                 onChange={(e) => setName(e.target.value)}
+                                color="white"
+                                _placeholder={{ color: 'gray.400' }}
                                 bg="gray.900" borderColor="gray.700"
                             />
                         </FormControl>
@@ -118,6 +120,8 @@ export const EditServerModal = ({ isOpen, onClose, server, onServerUpdated }: Ed
                                 placeholder="Uma breve descrição sobre o servidor..."
                                 value={description}
                                 onChange={(e) => setDescription(e.target.value)}
+                                color="white"
+                                _placeholder={{ color: 'gray.400' }}
                                 bg="gray.900" borderColor="gray.700"
                                 resize="none"
                             />

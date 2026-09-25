@@ -519,6 +519,8 @@ export const FriendsView = ({
                                         value={searchQuery}
                                         onChange={(e) => setSearchQuery(e.target.value)}
                                         onKeyDown={(e) => e.key === 'Enter' && handleSendRequest()}
+                                        color="white"
+                                        _placeholder={{ color: 'gray.400' }}
                                         bg="gray.800"
                                         border="1px solid"
                                         borderColor="gray.600"

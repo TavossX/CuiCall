@@ -331,6 +331,14 @@ export const DMPanel = ({
                         placeholder={isUploading ? "Enviando imagem..." : `Conversar com @${friendDisplayName}`}
                         value={inputText}
                         onChange={(e) => setInputText(e.target.value)}
+                        color="white"
+                        _placeholder={{ color: 'gray.400' }}
+                        bg="gray.800"
+                        border="none"
+                        size="md"
+                        borderRadius="lg"
+                        _focus={{ boxShadow: 'none', bg: 'gray.850' }}
+                        isDisabled={isUploading}
                         onKeyDown={(e) => {
                             if (e.key === 'Enter') {
                                 handleSend();
@@ -344,13 +352,6 @@ export const DMPanel = ({
                                 }
                             }
                         }}
-                        bg="gray.800"
-                        border="none"
-                        size="md"
-                        borderRadius="lg"
-                        _focus={{ boxShadow: 'none', bg: 'gray.850' }}
-                        _placeholder={{ color: 'gray.400' }}
-                        isDisabled={isUploading}
                     />
                     <IconButton
                         aria-label="Enviar"

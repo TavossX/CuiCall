@@ -302,6 +302,8 @@ export const SettingsModal = ({ isOpen, onClose, onProfileUpdated }: SettingsMod
                                                     <Input 
                                                         value={displayName} 
                                                         onChange={(e) => setDisplayName(e.target.value)} 
+                                                        color="white"
+                                                        _placeholder={{ color: 'gray.400' }}
                                                         bg="gray.900" 
                                                         borderColor="gray.700" 
                                                         _hover={{ borderColor: 'gray.600' }}

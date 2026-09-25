@@ -100,6 +100,8 @@ export const CreateServerModal = ({ isOpen, onClose, onServerCreated }: CreateSe
                                 placeholder="ex: Servidor do Otávio"
                                 value={serverName}
                                 onChange={(e) => setServerName(e.target.value)}
+                                color="white"
+                                _placeholder={{ color: 'gray.400' }}
                                 bg="gray.900"
                                 border="1px solid"
                                 borderColor="gray.700"

@@ -12,8 +12,8 @@ public class HeartbeatSweepService : BackgroundService
 {
     private readonly IHubContext<CallHub> _hubContext;
     private readonly ILogger<HeartbeatSweepService> _logger;
-    private readonly TimeSpan _checkInterval = TimeSpan.FromSeconds(3);
-    private readonly TimeSpan _timeoutThreshold = TimeSpan.FromSeconds(10);
+    private readonly TimeSpan _checkInterval = TimeSpan.FromSeconds(5);
+    private readonly TimeSpan _timeoutThreshold = TimeSpan.FromSeconds(20);
 
     public HeartbeatSweepService(IHubContext<CallHub> hubContext, ILogger<HeartbeatSweepService> logger)
     {

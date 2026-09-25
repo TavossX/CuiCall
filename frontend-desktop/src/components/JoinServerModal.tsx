@@ -84,6 +84,8 @@ export const JoinServerModal = ({ isOpen, onClose, onServerJoined }: JoinServerM
                                 placeholder="ex: 123e4567-e89b-12d3-a456-426614174000"
                                 value={inviteId}
                                 onChange={(e) => setInviteId(e.target.value)}
+                                color="white"
+                                _placeholder={{ color: 'gray.400' }}
                                 bg="gray.900" borderColor="gray.700"
                             />
                         </FormControl>

@@ -80,6 +80,8 @@ export const CreateChannelModal = ({ isOpen, onClose, serverId, initialType = 't
                                 placeholder="novo-canal"
                                 value={name}
                                 onChange={(e) => setName(e.target.value)}
+                                color="white"
+                                _placeholder={{ color: 'gray.400' }}
                                 bg="gray.900" borderColor="gray.700"
                             />
                         </FormControl>

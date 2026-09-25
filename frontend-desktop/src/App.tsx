@@ -1021,6 +1021,14 @@ export function App() {
                                             placeholder={isUploadingAttachment ? "Enviando anexo..." : `Conversar em # ${activeChannel.name}`}
                                             value={chatInput}
                                             onChange={(e) => setChatInput(e.target.value)}
+                                            color="white"
+                                            _placeholder={{ color: 'gray.400' }}
+                                            bg="gray.800"
+                                            border="none"
+                                            size="md"
+                                            borderRadius="lg"
+                                            _focus={{ boxShadow: 'none', bg: 'gray.850' }}
+                                            isDisabled={isUploadingAttachment}
                                             onKeyDown={(e) => {
                                                 if (e.key === 'Enter') {
                                                     handleSendMessage();
@@ -1034,10 +1042,6 @@ export function App() {
                                                     }
                                                 }
                                             }}
-                                            bg="gray.800" border="none" size="md" borderRadius="lg"
-                                            _focus={{ boxShadow: 'none', bg: 'gray.850' }}
-                                            _placeholder={{ color: 'gray.400' }}
-                                            isDisabled={isUploadingAttachment}
                                         />
                                         <Button
                                             colorScheme="blue"
