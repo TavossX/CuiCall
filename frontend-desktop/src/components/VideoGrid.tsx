@@ -39,12 +39,22 @@ function VideoTile({
     isInStrip: boolean;
 }) {
     const videoRef = useRef<HTMLVideoElement>(null);
+    const audioRef = useRef<HTMLAudioElement>(null);
 
     useEffect(() => {
         if (videoRef.current && entry.stream) {
             videoRef.current.srcObject = entry.stream;
         }
     }, [entry.stream]);
+
+    useEffect(() => {
+        if (audioRef.current && entry.stream && !entry.isLocal) {
+            audioRef.current.srcObject = entry.stream;
+            audioRef.current.play().catch((err) => {
+                console.warn("[Audio] Reprodução de áudio remoto aguardando interação:", err);
+            });
+        }
+    }, [entry.stream, entry.isLocal]);
 
     const showVideo = entry.stream && !entry.isCamOff;
     const viewClass = entry.isScreenSharing ? 'screen-share-view' : 'webcam-view';
@@ -54,6 +64,11 @@ function VideoTile({
             className={`video-tile ${isFocused ? 'video-tile--active' : ''} ${viewClass}`}
             onClick={isFocused ? onUnfocus : onFocus}
         >
+            {/* Elemento de áudio dedicado para streams remotas (garante som mesmo com câmera desligada) */}
+            {!entry.isLocal && entry.stream && (
+                <audio ref={audioRef} autoPlay playsInline style={{ display: 'none' }} />
+            )}
+
             {/* Focus/Unfocus button */}
             <button
                 className="video-tile__focus-btn"
@@ -89,9 +104,7 @@ function VideoTile({
                         size={isInStrip ? 56 : 88}
                         userId={entry.id || entry.label}
                     />
-                    {entry.isCamOff && (
-                        <span className="video-tile__cam-off-label">Câmera desligada</span>
-                    )}
+                    <span className="video-tile__cam-off-label">Câmera desligada</span>
                 </div>
             )}
 
@@ -134,7 +147,7 @@ export function VideoGrid({
             stream: rs.stream,
             label: rs.peerId.slice(0, 8),
             isLocal: false,
-            isCamOff: false, // We can't know remote cam state without data channel
+            isCamOff: !rs.stream.getVideoTracks().some(t => t.enabled && t.readyState === 'live'),
             isMuted: false,
             isScreenSharing: rs.isScreenSharing,
         })),

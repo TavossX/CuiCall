@@ -374,6 +374,9 @@ export const useWebRTC = () => {
             console.log(`[WebRTC 🎥] Track de mídia remota recebida de ${remotePeerId}:`, event.track.kind);
             if (event.streams && event.streams[0]) {
                 addRemoteStream(remotePeerId, event.streams[0]);
+            } else {
+                const stream = new MediaStream([event.track]);
+                addRemoteStream(remotePeerId, stream);
             }
         };
 
